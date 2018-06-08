@@ -49,6 +49,19 @@ arch.SIG = {
   XFSZ = 31,
 }
 
+arch.SOCK = {
+  DGRAM     = 1,
+  STREAM    = 2,
+  RAW       = 3,
+  RDM       = 4,
+  SEQPACKET = 5,
+  DCCP      = 6,
+  PACKET    = 10,
+
+  CLOEXEC  = octal('02000000'),
+  NONBLOCK = octal('0200'),
+}
+
 arch.MAP = {
   SHARED     = 0x001,
   PRIVATE    = 0x002,
@@ -69,6 +82,10 @@ arch.MAP = {
 local __O_SYNC = 0x4000
 
 arch.O = {
+  RDONLY   = 0x0000,
+  WRONLY   = 0x0001,
+  RDWR     = 0x0002,
+  ACCMODE  = 0x0003,
   APPEND   = 0x0008,
   DSYNC    = 0x0010,
   NONBLOCK = 0x0080,
@@ -78,9 +95,18 @@ arch.O = {
   NOCTTY   = 0x0800,
   LARGEFILE= 0x2000,
   DIRECT   = 0x8000,
+  DIRECTORY= 0x10000,
+  NOFOLLOW = 0x20000,
+  NOATIME  = 0x40000,
+  CLOEXEC  = octal '02000000',
 }
 
 arch.O_SYNC = __O_SYNC + arch.O.DSYNC -- compatibility, see notes in header, we do not expose __O_SYNC TODO check if this is best way
+
+arch.TFD = {
+  CLOEXEC = octal '02000000',
+  NONBLOCK = octal '00000200',
+}
 
 arch.E = {
   PERM          =  1,
@@ -346,6 +372,8 @@ arch.SO = {
 }
 
 arch.SO.STYLE = arch.SO.TYPE
+
+arch.SOLSOCKET = 0xffff -- remainder of SOL values same
 
 arch.F = {
   DUPFD       = 0,

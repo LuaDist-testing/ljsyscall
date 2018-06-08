@@ -137,8 +137,10 @@ c.E = strflag {
 }
 
 -- alternate names
-c.E.WOULDBLOCK    = c.E.EAGAIN
-c.E.DEADLOCK      = c.E.EDEADLK
+c.EALIAS = {
+  WOULDBLOCK    = c.E.AGAIN,
+  DEADLOCK      = c.E.EDEADLK,
+}
 
 c.AF = strflag {
   UNSPEC      = 0,
@@ -926,6 +928,177 @@ c.NOTE = multiflags {
   APPINACTIVE       = 0x00100000,
   APPALLSTATES      = 0x00f00000,
 --]]
+}
+
+c.ITIMER = strflag {
+  REAL    = 0,
+  VIRTUAL = 1,
+  PROF    = 2,
+}
+
+c.IP = strflag {
+  OPTIONS            = 1,
+  HDRINCL            = 2,
+  TOS                = 3,
+  TTL                = 4,
+  RECVOPTS           = 5,
+  RECVRETOPTS        = 6,
+  RECVDSTADDR        = 7,
+  RETOPTS            = 8,
+  MULTICAST_IF       = 9,
+  MULTICAST_TTL      = 10,
+  MULTICAST_LOOP     = 11,
+  ADD_MEMBERSHIP     = 12,
+  DROP_MEMBERSHIP    = 13,
+  MULTICAST_VIF      = 14,
+  RSVP_ON            = 15,
+  RSVP_OFF           = 16,
+  RSVP_VIF_ON        = 17,
+  RSVP_VIF_OFF       = 18,
+  PORTRANGE          = 19,
+  RECVIF             = 20,
+  IPSEC_POLICY       = 21,
+  FAITH              = 22,
+  STRIPHDR           = 23,
+  RECVTTL            = 24,
+  BOUND_IF           = 25,
+  PKTINFO            = 26,
+  FW_ADD             = 40,
+  FW_DEL             = 41,
+  FW_FLUSH           = 42,
+  FW_ZERO            = 43,
+  FW_GET             = 44,
+  FW_RESETLOG        = 45,
+}
+
+-- ipv6 sockopts
+c.IPV6 = strflag {
+  SOCKOPT_RESERVED1 = 3,
+  UNICAST_HOPS      = 4,
+  MULTICAST_IF      = 9,
+  MULTICAST_HOPS    = 10,
+  MULTICAST_LOOP    = 11,
+  JOIN_GROUP        = 12,
+  LEAVE_GROUP       = 13,
+  PORTRANGE         = 14,
+  ["2292PKTINFO"]   = 19,
+  ["2292HOPLIMIT"]  = 20,
+  ["2292NEXTHOP"]   = 21,
+  ["2292HOPOPTS"]   = 22,
+  ["2292DSTOPTS"]   = 23,
+  ["2292RTHDR"]     = 24,
+  ["2292PKTOPTIONS"]= 25,
+  CHECKSUM          = 26,
+  V6ONLY            = 27,
+  IPSEC_POLICY      = 28,
+  FAITH             = 29,
+  RECVTCLASS        = 35,
+  TCLASS            = 36,
+}
+
+c.XATTR = multiflags {
+  NOFOLLOW   = 0x0001,
+  CREATE     = 0x0002,
+  REPLACE    = 0x0004,
+  NOSECURITY = 0x0008,
+  NODEFAULT  = 0x0010,
+}
+
+-- TODO many missing, see also freebsd
+c.MNT = strflag {
+  RDONLY      = 0x00000001,
+  SYNCHRONOUS = 0x00000002,
+  NOEXEC      = 0x00000004,
+  NOSUID      = 0x00000008,
+  NODEV       = 0x00000010,
+  UNION       = 0x00000020,
+  ASYNC       = 0x00000040,
+  CPROTECT    = 0x00000080,
+
+  FORCE       = 0x00080000,
+}
+
+c.CTL = strflag {
+  UNSPEC     = 0,
+  KERN       = 1,
+  VM         = 2,
+  VFS        = 3,
+  NET        = 4,
+  DEBUG      = 5,
+  HW         = 6,
+  MACHDEP    = 7,
+  USER       = 8,
+}
+
+c.KERN = strflag {
+  OSTYPE            =  1,
+  OSRELEASE         =  2,
+  OSREV             =  3,
+  VERSION           =  4,
+  MAXVNODES         =  5,
+  MAXPROC           =  6,
+  MAXFILES          =  7,
+  ARGMAX            =  8,
+  SECURELVL         =  9,
+  HOSTNAME          = 10,
+  HOSTID            = 11,
+  CLOCKRATE         = 12,
+  VNODE             = 13,
+  PROC              = 14,
+  FILE              = 15,
+  PROF              = 16,
+  POSIX1            = 17,
+  NGROUPS           = 18,
+  JOB_CONTROL       = 19,
+  SAVED_IDS         = 20,
+  BOOTTIME          = 21,
+  NISDOMAINNAME     = 22,
+  MAXPARTITIONS     = 23,
+  KDEBUG            = 24,
+  UPDATEINTERVAL    = 25,
+  OSRELDATE         = 26,
+  NTP_PLL           = 27,
+  BOOTFILE          = 28,
+  MAXFILESPERPROC   = 29,
+  MAXPROCPERUID     = 30,
+  DUMPDEV           = 31,
+  IPC               = 32,
+  DUMMY             = 33,
+  PS_STRINGS        = 34,
+  USRSTACK32        = 35,
+  LOGSIGEXIT        = 36,
+  SYMFILE           = 37,
+  PROCARGS          = 38,
+  NETBOOT           = 40,
+  PANICINFO         = 41,
+  SYSV              = 42,
+  AFFINITY          = 43,
+  TRANSLATE         = 44,
+  EXEC              = 45,
+  AIOMAX            = 46,
+  AIOPROCMAX        = 47,
+  AIOTHREADS        = 48,
+  COREFILE          = 50,
+  COREDUMP          = 51,
+  SUGID_COREDUMP    = 52,
+  PROCDELAYTERM     = 53,
+  SHREG_PRIVATIZABLE= 54,
+  LOW_PRI_WINDOW    = 56,
+  LOW_PRI_DELAY     = 57,
+  POSIX             = 58,
+  USRSTACK64        = 59,
+  NX_PROTECTION     = 60,
+  TFP               = 61,
+  PROCNAME          = 62,
+  THALTSTACK        = 63,
+  SPECULATIVE_READS = 64,
+  OSVERSION         = 65,
+  SAFEBOOT          = 66,
+  LCTX              = 67,
+  RAGEVNODE         = 68,
+  TTY               = 69,
+  CHECKOPENEVT      = 70,
+  THREADNAME        = 71,
 }
 
 return c

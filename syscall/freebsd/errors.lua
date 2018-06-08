@@ -1,6 +1,10 @@
 -- FreeBSD error messages
 
-return {
+local require = require
+
+local version = require "syscall.freebsd.version".version
+
+local errors = {
   PERM = "Operation not permitted",
   NOENT = "No such file or directory",
   SRCH = "No such process",
@@ -95,7 +99,12 @@ return {
   PROTO = "Protocol error",
   NOTCAPABLE = "Capabilities insufficient",
   CAPMODE = "Not permitted in capability mode",
-  NOTRECOVERABLE = "State not recoverable",
-  OWNERDEAD = "Previous owner died",
 }
+
+if version >= 10 then
+  errors.NOTRECOVERABLE = "State not recoverable"
+  errors.OWNERDEAD = "Previous owner died"
+end
+
+return errors
 

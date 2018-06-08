@@ -7,6 +7,8 @@ require, error, assert, tonumber, tostring,
 setmetatable, pairs, ipairs, unpack, rawget, rawset,
 pcall, type, table, string
 
+local abi = require "syscall.abi"
+
 local h = require "syscall.helpers"
 
 local bit = require "syscall.bit"
@@ -133,7 +135,9 @@ c.E = strflag {
 }
 
 -- alternate names
-c.E.WOULDBLOCK    = c.E.AGAIN
+c.EALIAS = {
+  WOULDBLOCK    = c.E.AGAIN,
+}
 
 c.AF = strflag {
   UNSPEC      = 0,
@@ -208,6 +212,13 @@ c.SIGACT = strflag {
   DFL =  0,
   IGN =  1,
   HOLD = 3,
+}
+
+c.SIGEV = strflag {
+  NONE      = 0,
+  SIGNAL    = 1,
+  THREAD    = 2,
+  SA        = 3,
 }
 
 c.SIG = strflag {
@@ -439,11 +450,6 @@ c.SHUT = strflag {
   RDWR = 2,
 }
 
-c.UMOUNT = multiflags {
-  FORCE    = 0x00080000,
-}
-
--- note equivalent of MS_ in Linux
 c.MNT = multiflags {
   RDONLY      = 0x00000001,
   SYNCHRONOUS = 0x00000002,
@@ -454,6 +460,7 @@ c.MNT = multiflags {
   ASYNC       = 0x00000040,
   NOCOREDUMP  = 0x00008000,
   RELATIME    = 0x00020000,
+  FORCE       = 0x00080000,
   IGNORE      = 0x00100000,
   EXTATTR     = 0x01000000,
   LOG         = 0x02000000,
@@ -1007,7 +1014,7 @@ c.KTR = strflag {
   USER     = 8,
   EXEC_ARG = 10,
   EXEC_ENV = 11,
-  SAUPCALL = 13,
+  SAUPCALL = 13, 
   MIB      = 14,
   EXEC_FD  = 15,
 }
@@ -1024,7 +1031,7 @@ c.KTRFAC = multiflags {
   USER       = bit.lshift(1, c.KTR.USER),
   EXEC_ARG   = bit.lshift(1, c.KTR.EXEC_ARG),
   EXEC_ENV   = bit.lshift(1, c.KTR.EXEC_ENV),
-  SAUPCALL   = bit.lshift(1, c.KTR.SAUPCALL),
+--SAUPCALL   = bit.lshift(1, c.KTR.SAUPCALL), -- appears to be gone in NetBSD 7
   MIB        = bit.lshift(1, c.KTR.MIB),
   EXEC_FD    = bit.lshift(1, c.KTR.EXEC_FD),
   PERSISTENT = 0x80000000,
@@ -1097,6 +1104,456 @@ c.TCP = strflag {
   KEEPINIT   = 7,
   MD5SIG     = 0x10,
   CONGCTL    = 0x20,
+}
+
+c.ITIMER = strflag {
+  REAL    = 0,
+  VIRTUAL = 1,
+  PROF    = 2,
+  MONOTONIC = 3,
+}
+
+c.TIMER = strflag {
+  RELTIME = 0x0,
+  ABSTIME = 0x1,
+}
+
+-- ipv6 sockopts
+c.IPV6 = strflag {
+  SOCKOPT_RESERVED1 = 3,
+  UNICAST_HOPS      = 4,
+  MULTICAST_IF      = 9,
+  MULTICAST_HOPS    = 10,
+  MULTICAST_LOOP    = 11,
+  JOIN_GROUP        = 12,
+  LEAVE_GROUP       = 13,
+  PORTRANGE         = 14,
+--PORTALGO          = 17, -- netbsd 7 only
+--ICMP6_FILTER      = 18, -- not namespaced as IPV6
+  CHECKSUM          = 26,
+  V6ONLY            = 27,
+  IPSEC_POLICY      = 28,
+  FAITH             = 29,
+  RTHDRDSTOPTS      = 35,
+  RECVPKTINFO       = 36,
+  RECVHOPLIMIT      = 37,
+  RECVRTHDR         = 38,
+  RECVHOPOPTS       = 39,
+  RECVDSTOPTS       = 40,
+  USE_MIN_MTU       = 42,
+  RECVPATHMTU       = 43,
+  PATHMTU           = 44,
+  PKTINFO           = 46,
+  HOPLIMIT          = 47,
+  NEXTHOP           = 48,
+  HOPOPTS           = 49,
+  DSTOPTS           = 50,
+  RTHDR             = 51,
+  RECVTCLASS        = 57,
+  TCLASS            = 61,
+  DONTFRAG          = 62,
+}
+
+c.RTF = multiflags {
+  UP         = 0x1,
+  GATEWAY    = 0x2,
+  HOST       = 0x4,
+  REJECT     = 0x8,
+  DYNAMIC    = 0x10,
+  MODIFIED   = 0x20,
+  DONE       = 0x40,
+  MASK       = 0x80,
+  CLONING    = 0x100,
+  XRESOLVE   = 0x200,
+  LLINFO     = 0x400,
+  STATIC     = 0x800,
+  BLACKHOLE  = 0x1000,
+  CLONED     = 0x2000,
+  PROTO2     = 0x4000,
+  PROTO1     = 0x8000,
+  SRC        = 0x10000,
+  ANNOUNCE   = 0x20000,
+}
+
+c.RTM = strflag {
+  VERSION    = 4,
+
+  ADD        = 0x1,
+  DELETE     = 0x2,
+  CHANGE     = 0x3,
+  GET        = 0x4,
+  LOSING     = 0x5,
+  REDIRECT   = 0x6,
+  MISS       = 0x7,
+  LOCK       = 0x8,
+  OLDADD     = 0x9,
+  OLDDEL     = 0xa,
+  RESOLVE    = 0xb,
+  NEWADDR    = 0xc,
+  DELADDR    = 0xd,
+  OOIFINFO   = 0xe,
+  OIFINFO    = 0xf,
+  IFANNOUNCE = 0x10,
+  IEEE80211  = 0x11,
+  SETGATE    = 0x12,
+  LLINFO_UPD = 0x13,
+  IFINFO     = 0x14,
+  CHGADDR    = 0x15,
+}
+
+c.RTV = multiflags {
+  MTU        = 0x1,
+  HOPCOUNT   = 0x2,
+  EXPIRE     = 0x4,
+  RPIPE      = 0x8,
+  SPIPE      = 0x10,
+  SSTHRESH   = 0x20,
+  RTT        = 0x40,
+  RTTVAR     = 0x80,
+}
+
+c.RTA = multiflags {
+  DST        = 0x1,
+  GATEWAY    = 0x2,
+  NETMASK    = 0x4,
+  GENMASK    = 0x8,
+  IFP        = 0x10,
+  IFA        = 0x20,
+  AUTHOR     = 0x40,
+  BRD        = 0x80,
+  TAG        = 0x100,
+}
+
+c.RTAX = strflag {
+  DST       = 0,
+  GATEWAY   = 1,
+  NETMASK   = 2,
+  GENMASK   = 3,
+  IFP       = 4,
+  IFA       = 5,
+  AUTHOR    = 6,
+  BRD       = 7,
+  TAG       = 8,
+  MAX       = 9,
+}
+
+c.CLOCK = strflag {
+  REALTIME           = 0,
+  VIRTUAL            = 1,
+  PROF               = 2,
+  MONOTONIC          = 3,
+}
+
+c.EXTATTR_NAMESPACE = strflag {
+  USER         = 0x00000001,
+  SYSTEM       = 0x00000002,
+}
+
+c.XATTR = multiflags {
+  CREATE           = 0x01,
+  REPLACE          = 0x02,
+}
+
+c.AIO = strflag {
+  CANCELED         = 0x1,
+  NOTCANCELED      = 0x2,
+  ALLDONE          = 0x3,
+}
+
+c.LIO = strflag {
+-- LIO opcodes
+  NOP                = 0x0,
+  WRITE              = 0x1,
+  READ               = 0x2,
+-- LIO modes
+  NOWAIT             = 0x0,
+  WAIT               = 0x1,
+}
+
+c.CTLTYPE = strflag {
+  NODE    = 1,
+  INT     = 2,
+  STRING  = 3,
+  QUAD    = 4,
+  STRUCT  = 5,
+  BOOL    = 6,
+}
+
+if abi.abi64 then
+  c.CTLTYPE.LONG = c.CTLTYPE.QUAD
+else
+  c.CTLTYPE_LONG = c.CTLTYPE.INT
+end
+
+c.CTLFLAG = multiflags {
+  READONLY       = 0x00000000,
+  READWRITE      = 0x00000070,
+  ANYWRITE       = 0x00000080,
+  PRIVATE        = 0x00000100,
+  PERMANENT      = 0x00000200,
+  OWNDATA        = 0x00000400,
+  IMMEDIATE      = 0x00000800,
+  HEX            = 0x00001000,
+  ROOT           = 0x00002000,
+  ANYNUMBER      = 0x00004000,
+  HIDDEN         = 0x00008000,
+  ALIAS          = 0x00010000,
+  MMAP           = 0x00020000,
+  OWNDESC        = 0x00040000,
+  UNSIGNED       = 0x00080000,
+}
+
+c.CTL = strflag {
+  -- meta
+  EOL        = -1,
+  QUERY      = -2,
+  CREATE     = -3,
+  CREATESYM  = -4,
+  DESTROY    = -5,
+  MMAP       = -6,
+  DESCRIBE   = -7,
+  -- top level
+  UNSPEC     = 0,
+  KERN       = 1,
+  VM         = 2,
+  VFS        = 3,
+  NET        = 4,
+  DEBUG      = 5,
+  HW         = 6,
+  MACHDEP    = 7,
+  USER       = 8,
+  DDB        = 9,
+  PROC       = 10,
+  VENDOR     = 11,
+  EMUL       = 12,
+  SECURITY   = 13,
+  MAXID      = 14,
+}
+
+c.KERN = strflag {
+  OSTYPE            =  1,
+  OSRELEASE         =  2,
+  OSREV             =  3,
+  VERSION           =  4,
+  MAXVNODES         =  5,
+  MAXPROC           =  6,
+  MAXFILES          =  7,
+  ARGMAX            =  8,
+  SECURELVL         =  9,
+  HOSTNAME          = 10,
+  HOSTID            = 11,
+  CLOCKRATE         = 12,
+  VNODE             = 13,
+  PROC              = 14,
+  FILE              = 15,
+  PROF              = 16,
+  POSIX1            = 17,
+  NGROUPS           = 18,
+  JOB_CONTROL       = 19,
+  SAVED_IDS         = 20,
+  OBOOTTIME         = 21,
+  DOMAINNAME        = 22,
+  MAXPARTITIONS     = 23,
+  RAWPARTITION      = 24,
+  NTPTIME           = 25,
+  TIMEX             = 26,
+  AUTONICETIME      = 27,
+  AUTONICEVAL       = 28,
+  RTC_OFFSET        = 29,
+  ROOT_DEVICE       = 30,
+  MSGBUFSIZE        = 31,
+  FSYNC             = 32,
+  OLDSYSVMSG        = 33,
+  OLDSYSVSEM        = 34,
+  OLDSYSVSHM        = 35,
+  OLDSHORTCORENAME  = 36,
+  SYNCHRONIZED_IO   = 37,
+  IOV_MAX           = 38,
+  MBUF              = 39,
+  MAPPED_FILES      = 40,
+  MEMLOCK           = 41,
+  MEMLOCK_RANGE     = 42,
+  MEMORY_PROTECTION = 43,
+  LOGIN_NAME_MAX    = 44,
+  DEFCORENAME       = 45,
+  LOGSIGEXIT        = 46,
+  PROC2             = 47,
+  PROC_ARGS         = 48,
+  FSCALE            = 49,
+  CCPU              = 50,
+  CP_TIME           = 51,
+  OLDSYSVIPC_INFO   = 52,
+  MSGBUF            = 53,
+  CONSDEV           = 54,
+  MAXPTYS           = 55,
+  PIPE              = 56,
+  MAXPHYS           = 57,
+  SBMAX             = 58,
+  TKSTAT            = 59,
+  MONOTONIC_CLOCK   = 60,
+  URND              = 61,
+  LABELSECTOR       = 62,
+  LABELOFFSET       = 63,
+  LWP               = 64,
+  FORKFSLEEP        = 65,
+  POSIX_THREADS     = 66,
+  POSIX_SEMAPHORES  = 67,
+  POSIX_BARRIERS    = 68,
+  POSIX_TIMERS      = 69,
+  POSIX_SPIN_LOCKS  = 70,
+  POSIX_READER_WRITER_LOCKS = 71,
+  DUMP_ON_PANIC     = 72,
+  SOMAXKVA          = 73,
+  ROOT_PARTITION    = 74,
+  DRIVERS           = 75,
+  BUF               = 76,
+  FILE2             = 77,
+  VERIEXEC          = 78,
+  CP_ID             = 79,
+  HARDCLOCK_TICKS   = 80,
+  ARND              = 81,
+  SYSVIPC           = 82,
+  BOOTTIME          = 83,
+  EVCNT             = 84,
+  MAXID             = 85,
+}
+
+c.KERN_PIPE = strflag {
+  MAXKVASZ          = 1,
+  LIMITKVA          = 2,
+  MAXBIGPIPES       = 3,
+  NBIGPIPES         = 4,
+  KVASIZE           = 5,
+}
+
+c.KERN_PIPE.MAXLOANKVASZ = c.KERN_PIPE.LIMITKVA -- alternate name TODO move to aliases
+
+c.KERN_TKSTAT = strflag {
+  NIN               = 1,
+  NOUT              = 2,
+  CANCC             = 3,
+  RAWCC             = 4,
+}
+
+c.HW = strflag {
+  MACHINE     =  1,
+  MODEL       =  2,
+  NCPU        =  3,
+  BYTEORDER   =  4,
+  PHYSMEM     =  5,
+  USERMEM     =  6,
+  PAGESIZE    =  7,
+  DISKNAMES   =  8,
+  IOSTATS     =  9,
+  MACHINE_ARCH= 10,
+  ALIGNBYTES  = 11,
+  CNMAGIC     = 12,
+  PHYSMEM64   = 13,
+  USERMEM64   = 14,
+  IOSTATNAMES = 15,
+  NCPUONLINE  = 16,
+}
+
+c.VM = strflag {
+  METER       = 1,
+  LOADAVG     = 2,
+  UVMEXP      = 3,
+  NKMEMPAGES  = 4,
+  UVMEXP2     = 5,
+  ANONMIN     = 6,
+  EXECMIN     = 7,
+  FILEMIN     = 8,
+  MAXSLP      = 9,
+  USPACE      = 10,
+  ANONMAX     = 11,
+  EXECMAX     = 12,
+  FILEMAX     = 13,
+}
+
+c.IPCTL = strflag {
+  FORWARDING      =  1,
+  SENDREDIRECTS   =  2,
+  DEFTTL          =  3,
+--DEFMTU          =  4,
+  FORWSRCRT       =  5,
+  DIRECTEDBCAST   =  6,
+  ALLOWSRCRT      =  7,
+  SUBNETSARELOCAL =  8,
+  MTUDISC         =  9,
+  ANONPORTMIN     = 10,
+  ANONPORTMAX     = 11,
+  MTUDISCTIMEOUT  = 12,
+  MAXFLOWS        = 13,
+  HOSTZEROBROADCAST = 14,
+  GIF_TTL         = 15,
+  LOWPORTMIN      = 16,
+  LOWPORTMAX      = 17,
+  MAXFRAGPACKETS  = 18,
+  GRE_TTL         = 19,
+  CHECKINTERFACE  = 20,
+  IFQ             = 21,
+  RANDOMID        = 22,
+  LOOPBACKCKSUM   = 23,
+  STATS           = 24,
+}
+
+c.IPV6CTL = strflag {
+  FORWARDING     = 1,
+  SENDREDIRECTS  = 2,
+  DEFHLIM        = 3,
+--DEFMTU         = 4,
+  FORWSRCRT      = 5,
+  STATS          = 6,
+  MRTSTATS       = 7,
+  MRTPROTO       = 8,
+  MAXFRAGPACKETS = 9,
+  SOURCECHECK    = 10,
+  SOURCECHECK_LOGINT = 11,
+  ACCEPT_RTADV   = 12,
+  KEEPFAITH      = 13,
+  LOG_INTERVAL   = 14,
+  HDRNESTLIMIT   = 15,
+  DAD_COUNT      = 16,
+  AUTO_FLOWLABEL = 17,
+  DEFMCASTHLIM   = 18,
+  GIF_HLIM       = 19,
+  KAME_VERSION   = 20,
+  USE_DEPRECATED = 21,
+  RR_PRUNE       = 22,
+  V6ONLY         = 24,
+  ANONPORTMIN    = 28,
+  ANONPORTMAX    = 29,
+  LOWPORTMIN     = 30,
+  LOWPORTMAX     = 31,
+  USE_DEFAULTZONE= 39,
+  MAXFRAGS       = 41,
+  IFQ            = 42,
+  RTADV_MAXROUTES= 43,
+  RTADV_NUMROUTES= 44,
+}
+
+c.USER = strflag {
+  CS_PATH           =  1,
+  BC_BASE_MAX       =  2,
+  BC_DIM_MAX        =  3,
+  BC_SCALE_MAX      =  4,
+  BC_STRING_MAX     =  5,
+  COLL_WEIGHTS_MAX  =  6,
+  EXPR_NEST_MAX     =  7,
+  LINE_MAX          =  8,
+  RE_DUP_MAX        =  9,
+  POSIX2_VERSION    = 10,
+  POSIX2_C_BIND     = 11,
+  POSIX2_C_DEV      = 12,
+  POSIX2_CHAR_TERM  = 13,
+  POSIX2_FORT_DEV   = 14,
+  POSIX2_FORT_RUN   = 15,
+  POSIX2_LOCALEDEF  = 16,
+  POSIX2_SW_DEV     = 17,
+  POSIX2_UPE        = 18,
+  STREAM_MAX        = 19,
+  TZNAME_MAX        = 20,
+  ATEXIT_MAX        = 21,
 }
 
 return c

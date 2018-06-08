@@ -278,6 +278,7 @@ end
 
 -- generic inet name to ip, also with netmask support
 -- TODO convert to a type? either way should not really be in util, probably helpers
+-- better as a type that returns inet, mask
 function util.inet_name(src, netmask)
   local addr
   if not netmask then
@@ -299,13 +300,42 @@ function util.inet_name(src, netmask)
   return addr, netmask
 end
 
--- get broadcast address for ipv4 address and netmask TODO not in util
-function util.broadcast(address, netmask)
-  if type(address) == "string" then address, netmask = util.inet_name(address, netmask) end
-  if not address or not ffi.istype(t.in_addr, address) then return nil end
-  local bcast = t.in_addr(address)
-  if netmask < 32 then bcast.s_addr = bit.bor(tonumber(address.s_addr), htonl(bit.rshift(-1, netmask))) end
-  return bcast
+local function lastslash(name)
+  local ls
+  local i = 0
+  while true do 
+    i = string.find(name, "/", i + 1)
+    if not i then return ls end
+    ls = i
+  end
+end
+
+local function deltrailslash(name)
+  while name:sub(#name) == "/" do
+    name = string.sub(name, 1, #name - 1)
+  end
+  return name
+end
+
+function util.basename(name)
+  if name == "" then return "." end
+  name = deltrailslash(name)
+  if name == "" then return "/" end -- was / or // etc
+  local ls = lastslash(name)
+  if not ls then return name end
+  return string.sub(name, ls + 1)
+end
+
+function util.dirname(name)
+  if name == "" then return "." end
+  name = deltrailslash(name)
+  if name == "" then return "/" end -- was / or // etc
+  local ls = lastslash(name)
+  if not ls then return "." end
+  name = string.sub(name, 1, ls - 1)
+  name = deltrailslash(name)
+  if name == "" then return "/" end -- was / or // etc
+  return name
 end
 
 return util

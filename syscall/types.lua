@@ -64,8 +64,6 @@ local addtypes = {
   id = "id_t",
   daddr = "daddr_t",
   time = "time_t",
-  blksize = "blksize_t",
-  blkcnt = "blkcnt_t",
   clock = "clock_t",
   nlink = "nlink_t",
   ino = "ino_t",
@@ -80,17 +78,24 @@ t.off1 = ffi.typeof("off_t[1]")
 t.uid1 = ffi.typeof("uid_t[1]")
 t.gid1 = ffi.typeof("gid_t[1]")
 
-local errsyms = {} -- reverse lookup
+local errsyms = {} -- reverse lookup by number
+local errnames = {} -- lookup error message by number
 for k, v in pairs(c.E) do
   errsyms[v] = k
+  errnames[v] = assert(c.errornames[k], "missing error name " .. k)
 end
 
+for k, v in pairs(c.EALIAS or {}) do
+  c.E[k] = v
+end
+c.EALIAS = nil
+
 mt.error = {
-  __tostring = function(e) return c.errornames[e.sym] end,
-  __index = function(t, k)
-    if k == 'sym' then return errsyms[t.errno] end
-    if k == 'lsym' then return errsyms[t.errno]:lower() end
-    if c.E[k] then return c.E[k] == t.errno end
+  __tostring = function(e) return errnames[e.errno] end,
+  __index = function(e, k)
+    if k == 'sym' then return errsyms[e.errno] end
+    if k == 'lsym' then return errsyms[e.errno]:lower() end
+    if c.E[k] then return c.E[k] == e.errno end
     error("invalid error " .. k)
   end,
   __new = function(tp, errno)
@@ -100,120 +105,6 @@ mt.error = {
 }
 
 t.error = ffi.metatype("struct {int errno;}", mt.error)
-
-mt.sockaddr = {
-  index = {
-    family = function(sa) return sa.sa_family end,
-  },
-}
-
-addtype(types, "sockaddr", "struct sockaddr", mt.sockaddr)
-
--- cast socket address to actual type based on family, defined later
-local samap_pt = {}
-
-mt.sockaddr_storage = {
-  index = {
-    family = function(sa) return sa.ss_family end,
-  },
-  newindex = {
-    family = function(sa, v) sa.ss_family = c.AF[v] end,
-  },
-  __index = function(sa, k)
-    if mt.sockaddr_storage.index[k] then return mt.sockaddr_storage.index[k](sa) end
-    local st = samap_pt[sa.ss_family]
-    if st then
-      local cs = st(sa)
-      return cs[k]
-    end
-    error("invalid index " .. k)
-  end,
-  __newindex = function(sa, k, v)
-    if mt.sockaddr_storage.newindex[k] then
-      mt.sockaddr_storage.newindex[k](sa, v)
-      return
-    end
-    local st = samap_pt[sa.ss_family]
-    if st then
-      local cs = st(sa)
-      cs[k] = v
-      return
-    end
-    error("invalid index " .. k)
-  end,
-  __new = function(tp, init)
-    local ss = ffi.new(tp)
-    local family
-    if init and init.family then family = c.AF[init.family] end
-    local st
-    if family then
-      st = samap_pt[family]
-      ss.ss_family = family
-      init.family = nil
-    end
-    if st then
-      local cs = st(ss)
-      for k, v in pairs(init) do
-        cs[k] = v
-      end
-    end
-    return ss
-  end,
-  -- netbsd likes to see the correct size when it gets a sockaddr; Linux was ok with a longer one
-  __len = function(sa)
-    if samap_pt[sa.family] then
-      local cs = samap_pt[sa.family](sa)
-      return #cs
-    else
-      return s.sockaddr_storage
-    end
-  end,
-}
-
--- experiment, see if we can use this as generic type, to avoid allocations.
-addtype(types, "sockaddr_storage", "struct sockaddr_storage", mt.sockaddr_storage)
-
-mt.sockaddr_in = {
-  index = {
-    family = function(sa) return sa.sin_family end,
-    port = function(sa) return ntohs(sa.sin_port) end,
-    addr = function(sa) return sa.sin_addr end,
-  },
-  newindex = {
-    family = function(sa, v) sa.sin_family = v end,
-    port = function(sa, v) sa.sin_port = htons(v) end,
-    addr = function(sa, v) sa.sin_addr = mktype(t.in_addr, v) end,
-  },
-  __new = function(tp, port, addr)
-    if type(port) == "table" then return newfn(tp, port) end
-    return newfn(tp, {family = c.AF.INET, port = port, addr = addr})
-  end,
-  __len = function(tp) return s.sockaddr_in end,
-}
-
-addtype(types, "sockaddr_in", "struct sockaddr_in", mt.sockaddr_in)
-
-mt.sockaddr_in6 = {
-  index = {
-    family = function(sa) return sa.sin6_family end,
-    port = function(sa) return ntohs(sa.sin6_port) end,
-    addr = function(sa) return sa.sin6_addr end,
-  },
-  newindex = {
-    family = function(sa, v) sa.sin6_family = v end,
-    port = function(sa, v) sa.sin6_port = htons(v) end,
-    addr = function(sa, v) sa.sin6_addr = mktype(t.in6_addr, v) end,
-    flowinfo = function(sa, v) sa.sin6_flowinfo = v end,
-    scope_id = function(sa, v) sa.sin6_scope_id = v end,
-  },
-  __new = function(tp, port, addr, flowinfo, scope_id) -- reordered initialisers.
-    if type(port) == "table" then return newfn(tp, port) end
-    return newfn(tp, {family = c.AF.INET6, port = port, addr = addr, flowinfo = flowinfo, scope_id = scope_id})
-  end,
-  __len = function(tp) return s.sockaddr_in6 end,
-}
-
-addtype(types, "sockaddr_in6", "struct sockaddr_in6", mt.sockaddr_in6)
 
 mt.timeval = {
   index = {
@@ -242,7 +133,8 @@ mt.timeval = {
     local ts = ffi.new(tp)
     ts.time = v
     return ts
-  end
+  end,
+  __tostring = function(tv) return tostring(tv.time) end,
 }
 
 addtype(types, "timeval", "struct timeval", mt.timeval)
@@ -275,6 +167,7 @@ mt.timespec = {
     ts.time = v
     return ts
   end,
+  __tostring = function(tv) return tostring(tv.time) end,
 }
 
 addtype(types, "timespec", "struct timespec", mt.timespec)
@@ -320,12 +213,12 @@ addtype_var(types, "groups", "struct {int count; gid_t list[?];}", mt.groups)
 -- signal set handlers
 local function sigismember(set, sig)
   local d = bit.rshift(sig - 1, 5) -- always 32 bits
-  return bit.band(set.val[d], bit.lshift(1, (sig - 1) % 32)) ~= 0
+  return bit.band(set.sig[d], bit.lshift(1, (sig - 1) % 32)) ~= 0
 end
 
 local function sigemptyset(set)
   for i = 0, s.sigset / 4 - 1 do
-    if set.val[i] ~= 0 then return false end
+    if set.sig[i] ~= 0 then return false end
   end
   return true
 end
@@ -333,14 +226,14 @@ end
 local function sigaddset(set, sig)
   set = t.sigset(set)
   local d = bit.rshift(sig - 1, 5)
-  set.val[d] = bit.bor(set.val[d], bit.lshift(1, (sig - 1) % 32))
+  set.sig[d] = bit.bor(set.sig[d], bit.lshift(1, (sig - 1) % 32))
   return set
 end
 
 local function sigdelset(set, sig)
   set = t.sigset(set)
   local d = bit.rshift(sig - 1, 5)
-  set.val[d] = bit.band(set.val[d], bit.bnot(bit.lshift(1, (sig - 1) % 32)))
+  set.sig[d] = bit.band(set.sig[d], bit.bnot(bit.lshift(1, (sig - 1) % 32)))
   return set
 end
 
@@ -389,13 +282,32 @@ mt.sigset = {
       local sig = c.SIG[st]
       if not sig then error("invalid signal: " .. v) end -- don't use this format if you don't want exceptions, better than silent ignore
       local d = bit.rshift(sig - 1, 5) -- always 32 bits
-      f.val[d] = bit.bor(f.val[d], bit.lshift(1, (sig - 1) % 32))
+      f.sig[d] = bit.bor(f.sig[d], bit.lshift(1, (sig - 1) % 32))
     end
     return f
   end,
 }
 
 addtype(types, "sigset", "sigset_t", mt.sigset)
+
+mt.sigval = {
+  index = {
+    int = function(self) return self.sival_int end,
+    ptr = function(self) return self.sival_ptr end,
+  },
+  newindex = {
+    int = function(self, v) self.sival_int = v end,
+    ptr = function(self, v) self.sival_ptr = v end,
+  },
+  __new = function(tp, v)
+    if not v or type(v) == "table" then return newfn(tp, v) end
+    local siv = ffi.new(tp)
+    if type(v) == "number" then siv.int = v else siv.ptr = v end
+    return siv
+  end,
+}
+
+addtype(types, "sigval", "union sigval", mt.sigval) -- not always called sigval_t
 
 -- cmsg functions, try to hide some of this nasty stuff from the user
 local cmsgtype = "struct cmsghdr"
@@ -534,10 +446,11 @@ mt.msghdr = {
     cmsg_firsthdr = cmsg_firsthdr,
     cmsg_nxthdr = cmsg_nxthdr,
     cmsgs = cmsg_headers,
+    -- TODO add iov
   },
   newindex = {
     name = function(m, n)
-      if n then m.msg_name, m.msg_namelen = n, #n else m.msg_name, m.msg_namelen = nil, 0 end
+      m.msg_name, m.msg_namelen = n, #n
     end,
     iov = function(m, io)
       if ffi.istype(t.iovec, io) then -- single iovec
@@ -602,42 +515,88 @@ mt.rusage = {
     nvcsw    = function(ru) return tonumber(ru.ru_nvcsw) end,
     nivcsw   = function(ru) return tonumber(ru.ru_nivcsw) end,
   },
+  print = {"utime", "stime", "maxrss", "ixrss", "idrss", "isrss", "minflt", "majflt", "nswap",
+           "inblock", "oublock", "msgsnd", "msgrcv", "nsignals", "nvcsw", "nivcsw"},
 }
 
 addtype(types, "rusage", "struct rusage", mt.rusage)
 
-mt.winsize = {
+local function itnormal(v)
+  if not v then v = {{0, 0}, {0, 0}} end
+  if v.interval then
+    v.it_interval = v.interval
+    v.interval = nil
+  end
+  if v.value then
+    v.it_value = v.value
+    v.value = nil
+  end
+  if not v.it_interval then
+    v.it_interval = v[1]
+    v[1] = nil
+  end
+  if not v.it_value then
+    v.it_value = v[2]
+    v[2] = nil
+  end
+  return v
+end
+
+mt.itimerspec = {
   index = {
-    row = function(ws) return ws.ws_row end,
-    col = function(ws) return ws.ws_col end,
-    xpixel = function(ws) return ws.ws_xpixel end,
-    ypixel = function(ws) return ws.ws_ypixel end,
+    interval = function(it) return it.it_interval end,
+    value = function(it) return it.it_value end,
   },
-  newindex = {
-    row = function(ws, v) ws.ws_row = v end,
-    col = function(ws, v) ws.ws_col = v end,
-    xpixel = function(ws, v) ws.ws_xpixel = v end,
-    ypixel = function(ws, v) ws.ws_ypixel = v end,
-  },
-  __new = newfn,
+  __new = function(tp, v)
+    v = itnormal(v)
+    v.it_interval = istype(t.timespec, v.it_interval) or t.timespec(v.it_interval)
+    v.it_value = istype(t.timespec, v.it_value) or t.timespec(v.it_value)
+    return ffi.new(tp, v)
+  end,
 }
 
-addtype(types, "winsize", "struct winsize", mt.winsize)
+addtype(types, "itimerspec", "struct itimerspec", mt.itimerspec)
+
+mt.itimerval = {
+  index = {
+    interval = function(it) return it.it_interval end,
+    value = function(it) return it.it_value end,
+  },
+  __new = function(tp, v)
+    v = itnormal(v)
+    v.it_interval = istype(t.timeval, v.it_interval) or t.timeval(v.it_interval)
+    v.it_value = istype(t.timeval, v.it_value) or t.timeval(v.it_value)
+    return ffi.new(tp, v)
+  end,
+}
+
+addtype(types, "itimerval", "struct itimerval", mt.itimerval)
+
+mt.macaddr = {
+  __tostring = function(m)
+    local hex = {}
+    for i = 1, 6 do
+      hex[i] = string.format("%02x", m.mac_addr[i - 1])
+    end
+    return table.concat(hex, ":")
+  end,
+  __new = function(tp, str)
+    local mac = ffi.new(tp)
+    if str then
+      for i = 1, 6 do
+        local n = tonumber(str:sub(i * 3 - 2, i * 3 - 1), 16) -- TODO more checks on syntax
+        mac.mac_addr[i - 1] = n
+      end
+    end
+    return mac
+  end,
+}
+
+addtype(types, "macaddr", "struct {uint8_t mac_addr[6];}", mt.macaddr)
 
 -- include OS specific types
 types = ostypes.init(types)
 if bsdtypes then types = bsdtypes.init(c, types) end
-
--- this is declared above
-samap_pt = {
-  [c.AF.UNIX] = pt.sockaddr_un,
-  [c.AF.INET] = pt.sockaddr_in,
-  [c.AF.INET6] = pt.sockaddr_in6,
-}
-
--- these are not defined for every OS (yet)
-if c.AF.NETLINK then samap_pt[c.AF.NETLINK] = pt.sockaddr_nl end
-if c.AF.PACKET then samap_pt[c.AF.PACKET] = pt.sockaddr_ll end
 
 -- define dents type if dirent is defined
 if t.dirent then

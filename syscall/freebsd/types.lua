@@ -39,6 +39,7 @@ for k, v in pairs(addstructs) do addtype(types, k, v, lenmt) end
 
 -- 32 bit dev_t, 24 bit minor, 8 bit major, but minor is a cookie and neither really used just legacy
 local function makedev(major, minor)
+  if type(major) == "table" then major, minor = major[1], major[2] end
   local dev = major or 0
   if minor then dev = bit.bor(minor, bit.lshift(major, 8)) end
   return dev
@@ -91,6 +92,26 @@ mt.stat = {
     iswht = function(st) return st.type == c.S_I.FWHT end,
   },
 }
+
+-- add some friendlier names to stat, also for luafilesystem compatibility
+mt.stat.index.access = mt.stat.index.atime
+mt.stat.index.modification = mt.stat.index.mtime
+mt.stat.index.change = mt.stat.index.ctime
+
+local namemap = {
+  file             = mt.stat.index.isreg,
+  directory        = mt.stat.index.isdir,
+  link             = mt.stat.index.islnk,
+  socket           = mt.stat.index.issock,
+  ["char device"]  = mt.stat.index.ischr,
+  ["block device"] = mt.stat.index.isblk,
+  ["named pipe"]   = mt.stat.index.isfifo,
+}
+
+mt.stat.index.typename = function(st)
+  for k, v in pairs(namemap) do if v(st) then return k end end
+  return "other"
+end
 
 addtype(types, "stat", "struct stat", mt.stat)
 
@@ -146,6 +167,12 @@ mt.fdset = {
 
 addtype(types, "fdset", "fd_set", mt.fdset)
 
+mt.cap_rights = {
+  -- TODO
+}
+
+addtype(types, "cap_rights", "cap_rights_t", mt.cap_rights)
+
 -- TODO see Linux notes. Also maybe can be shared with BSDs, have not checked properly
 -- TODO also remove WIF prefixes.
 mt.wait = {
@@ -172,6 +199,96 @@ mt.wait = {
 function t.waitstatus(status)
   return setmetatable({status = status}, mt.wait)
 end
+
+mt.siginfo = {
+  index = {
+    signo   = function(s) return s.si_signo end,
+    errno   = function(s) return s.si_errno end,
+    code    = function(s) return s.si_code end,
+    pid     = function(s) return s.si_pid end,
+    uid     = function(s) return s.si_uid end,
+    status  = function(s) return s.si_status end,
+    addr    = function(s) return s.si_addr end,
+    value   = function(s) return s.si_value end,
+    trapno  = function(s) return s._fault._trapno end,
+    timerid = function(s) return s._timer._timerid end,
+    overrun = function(s) return s._timer._overrun end,
+    mqd     = function(s) return s._mesgq._mqd end,
+    band    = function(s) return s._poll._band end,
+  },
+  newindex = {
+    signo   = function(s, v) s.si_signo = v end,
+    errno   = function(s, v) s.si_errno = v end,
+    code    = function(s, v) s.si_code = v end,
+    pid     = function(s, v) s.si_pid = v end,
+    uid     = function(s, v) s.si_uid = v end,
+    status  = function(s, v) s.si_status = v end,
+    addr    = function(s, v) s.si_addr = v end,
+    value   = function(s, v) s.si_value = v end,
+    trapno  = function(s, v) s._fault._trapno = v end,
+    timerid = function(s, v) s._timer._timerid = v end,
+    overrun = function(s, v) s._timer._overrun = v end,
+    mqd     = function(s, v) s._mesgq._mqd = v end,
+    band    = function(s, v) s._poll._band = v end,
+  },
+  __len = lenfn,
+}
+
+addtype(types, "siginfo", "siginfo_t", mt.siginfo)
+
+-- sigaction, standard POSIX behaviour with union of handler and sigaction
+addtype_fn(types, "sa_sigaction", "void (*)(int, siginfo_t *, void *)")
+
+mt.sigaction = {
+  index = {
+    handler = function(sa) return sa.__sigaction_u.__sa_handler end,
+    sigaction = function(sa) return sa.__sigaction_u.__sa_sigaction end,
+    mask = function(sa) return sa.sa_mask end,
+    flags = function(sa) return tonumber(sa.sa_flags) end,
+  },
+  newindex = {
+    handler = function(sa, v)
+      if type(v) == "string" then v = pt.void(c.SIGACT[v]) end
+      if type(v) == "number" then v = pt.void(v) end
+      sa.__sigaction_u.__sa_handler = v
+    end,
+    sigaction = function(sa, v)
+      if type(v) == "string" then v = pt.void(c.SIGACT[v]) end
+      if type(v) == "number" then v = pt.void(v) end
+      sa.__sigaction_u.__sa_sigaction = v
+    end,
+    mask = function(sa, v)
+      if not ffi.istype(t.sigset, v) then v = t.sigset(v) end
+      sa.sa_mask = v
+    end,
+    flags = function(sa, v) sa.sa_flags = c.SA[v] end,
+  },
+  __new = function(tp, tab)
+    local sa = ffi.new(tp)
+    if tab then for k, v in pairs(tab) do sa[k] = v end end
+    if tab and tab.sigaction then sa.sa_flags = bit.bor(sa.flags, c.SA.SIGINFO) end -- this flag must be set if sigaction set
+    return sa
+  end,
+}
+
+addtype(types, "sigaction", "struct sigaction", mt.sigaction)
+
+-- TODO some fields still missing
+mt.sigevent = {
+  index = {
+    notify = function(self) return self.sigev_notify end,
+    signo = function(self) return self.sigev_signo end,
+    value = function(self) return self.sigev_value end,
+  },
+  newindex = {
+    notify = function(self, v) self.sigev_notify = c.SIGEV[v] end,
+    signo = function(self, v) self.sigev_signo = c.SIG[v] end,
+    value = function(self, v) self.sigev_value = t.sigval(v) end, -- auto assigns based on type
+  },
+  __new = newfn,
+}
+
+addtype(types, "sigevent", "struct sigevent", mt.sigevent)
 
 return types
 

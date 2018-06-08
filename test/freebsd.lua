@@ -12,13 +12,7 @@ local ffi = require "ffi"
 
 local t, pt, s = types.t, types.pt, types.s
 
-local function assert(cond, err, ...)
-  collectgarbage("collect") -- force gc, to test for bugs
-  if cond == nil then error(tostring(err)) end -- annoyingly, assert does not call tostring!
-  if type(cond) == "function" then return cond, err, ... end
-  if cond == true then return ... end
-  return cond, ...
-end
+local assert = helpers.assert
 
 local function fork_assert(cond, err, ...) -- if we have forked we need to fail in main thread not fork
   if not cond then
@@ -60,6 +54,7 @@ local test = {}
 test.freebsd_unix_at = {
   teardown = clean,
   test_bindat = function()
+    if not S.bindat then error "skipped" end
     local s = assert(S.socket("unix", "stream"))
     local sa = t.sockaddr_un(tmpfile)
     assert(s:bindat("fdcwd", sa))
@@ -67,6 +62,7 @@ test.freebsd_unix_at = {
     assert(S.unlink(tmpfile))
   end,
   test_connectat = function()
+    if not S.connectat then error "skipped" end
     local s1 = assert(S.socket("unix", "stream"))
     local sa = t.sockaddr_un(tmpfile)
     assert(s1:bindat("fdcwd", sa))
@@ -88,7 +84,10 @@ test.freebsd_shm = {
 
 test.freebsd_procdesc = {
   test_procdesc = function()
-    local pid, pfd = assert(S.pdfork())
+    if not S.pdfork then error "skipped" end
+    local pid, err, pfd = S.pdfork()
+    if not pid and err.NOSYS then error "skipped" end -- seems to fail on freebsd9
+    assert(pid, err)
     if pid == 0 then -- child
       S.pause()
       S.exit()
@@ -106,9 +105,11 @@ test.freebsd_procdesc = {
 -- this is available as a patch for Linux, so these tests could be ported
 test.capsicum = {
   test_cap_sandboxed_not = function()
+    if not S.cap_sandboxed then error "skipped" end
     assert(not S.cap_sandboxed())
   end,
   test_cap_enter = function()
+    if not S.cap_sandboxed then error "skipped" end
     assert(not S.cap_sandboxed())
     local pid = assert(S.fork())
     if pid == 0 then -- child

@@ -24,8 +24,14 @@ local uint, ulong = ffi.typeof("unsigned int"), ffi.typeof("unsigned long")
 
 local function inlibc_fn(k) return ffi.C[k] end
 
+-- Syscalls that just return ENOSYS but are in libc. Note these might vary by version in future
+local nosys_calls = {
+  mlockall = true,
+}
+
 local C = setmetatable({}, {
   __index = function(C, k)
+    if nosys_calls[k] then return nil end
     if pcall(inlibc_fn, k) then
       C[k] = ffi.C[k] -- add to table, so no need for this slow path again
       return C[k]
@@ -50,7 +56,9 @@ function C.getdirentries(fd, buf, len, basep)
 end
 ]]
 
-C.getdirentries = C._getdirentries -- this is the legacy one
+-- cannot find these anywhere!
+--C.getdirentries = ffi.C._getdirentries
+--C.sigaction = ffi.C._sigaction
 
 return C
 

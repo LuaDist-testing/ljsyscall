@@ -30,27 +30,33 @@ if abi.arch == "mips" then abi.mipsabi = "o32" end -- only one supported now
 
 if abi.os == "bsd" or abi.os == "osx" then abi.bsd = true end -- some shared BSD functionality
 
--- BSD detection, we assume they all have a compatible sysctlbyname in libc, WIP
+-- Xen generally behaves like NetBSD, but our tests need to do rump-like setup; bit of a hack
 ffi.cdef[[
   int __ljsyscall_under_xen;
 ]]
-
--- Xen generally behaves like NetBSD, but our tests need to do rump-like setup; bit of a hack
 if pcall(inlibc_fn, "__ljsyscall_under_xen") then abi.xen = true end
 
-if not abi.xen and abi.os == "bsd" then
+-- BSD detection
+-- OpenBSD doesn't have sysctlbyname
+-- The good news is every BSD has utsname
+-- The bad news is that on FreeBSD it is a legacy version that has 32 byte unless you use __xuname
+-- fortunately sysname is first so we can use this value
+if not abi.xen and not abi.rump and abi.os == "bsd" then
   ffi.cdef [[
-  int sysctlbyname(const char *sname, void *oldp, size_t *oldlenp, const void *newp, size_t newlen);
+  struct _utsname {
+  char    sysname[256];
+  char    nodename[256];
+  char    release[256];
+  char    version[256];
+  char    machine[256];
+  };
+  int uname(struct _utsname *);
   ]]
-  local buf = ffi.new("char[32]")
-  local lenp = ffi.new("unsigned long[1]", 32)
-  local ok = ffi.C.sysctlbyname("kern.ostype", buf, lenp, nil, 0)
-  if not ok then error("cannot identify BSD version") end
-  abi.os = ffi.string(buf):lower()
+  local uname = ffi.new("struct _utsname")
+  ffi.C.uname(uname)
+  abi.os = ffi.string(uname.sysname):lower()
+  abi.uname = uname
 end
-
--- you can use version 7 here
-abi.netbsd = {version = 6}
 
 -- rump params
 abi.host = abi.os -- real OS, used for rump at present may change this

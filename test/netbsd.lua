@@ -14,13 +14,7 @@ local ffi = require "ffi"
 
 local t, pt, s = types.t, types.pt, types.s
 
-local function assert(cond, err, ...)
-  collectgarbage("collect") -- force gc, to test for bugs
-  if not cond then error(tostring(err)) end -- annoyingly, assert does not call tostring!
-  if type(cond) == "function" then return cond, err, ... end
-  if cond == true then return ... end
-  return cond, ...
-end
+local assert = helpers.assert
 
 local function fork_assert(cond, err, ...) -- if we have forked we need to fail in main thread not fork
   if not cond then
@@ -100,6 +94,24 @@ test.network_utils_netbsd_root = {
     assert(bit.band(flags, c.IFF.UP) == 0)
     assert(util.ifdestroy(ifname))
   end,
+  test_ifaddr_inet4 = function()
+    local ifname = "lo8" .. tostring(S.getpid())
+    assert(util.ifcreate(ifname))
+    assert(util.ifup(ifname))
+    assert(util.ifaddr_inet4(ifname, "127.1.0.1/24")) -- TODO fail gracefully if no ipv4 support
+    -- TODO need read functionality to test it worked correctly
+    assert(util.ifdown(ifname))
+    assert(util.ifdestroy(ifname))
+  end,
+  test_ifaddr_inet6 = function()
+    local ifname = "lo8" .. tostring(S.getpid())
+    assert(util.ifcreate(ifname))
+    assert(util.ifup(ifname))
+    assert(util.ifaddr_inet6(ifname, "fd97:fab9:44c2::1/48")) -- TODO this is my private registration (SIXXS), should be random
+    -- TODO need read functionality to test it worked correctly
+    assert(util.ifdown(ifname))
+    assert(util.ifdestroy(ifname))
+  end,
 }
 
 test.sockets_pipes_netbsd = {
@@ -151,6 +163,8 @@ test.sockets_pipes_netbsd = {
 }
 
 test.misc_netbsd = {
+  teardown = clean,
+--[[ -- should not be using major, minor as not defined over 32 bit, plus also ffs does not support
   test_mknod_64bit_root = function()
     local dev = t.device(1999875, 515)
     assert(dev.dev > t.dev(0xffffffff))
@@ -162,6 +176,7 @@ test.misc_netbsd = {
     assert_equal(stat.rdev.device, dev.device)
     assert(S.unlink(tmpfile))
   end,
+]]
   test_fsync_range = function()
     local fd = assert(S.creat(tmpfile, "RWXU"))
     assert(fd:sync_range("data", 0, 4096))
@@ -225,11 +240,11 @@ test.ktrace = {
     -- now do something that should be in trace
     assert_equal(pid, S.getpid())
     assert(S.ktrace(tmpfile, "clear", "syscall, sysret", pid))
-    S.nanosleep(0.01) -- can be flaky and only get one event otherwise
+    S.nanosleep(0.05) -- can be flaky and only get one event otherwise, TODO non racy fix
     assert(kfd:kevent(nil, kevs, 1)) -- block until extend
     local buf = t.buffer(4096)
     local n = assert(fd:read(buf, 4096))
-    local syscall, sysret = {}, {} -- on real OS luajit may do some meory allocations so may be extra calls occasionally
+    local syscall, sysret = {}, {} -- on real OS luajit may do some memory allocations so may be extra calls occasionally
     for _, ktr in util.kdump(buf, n) do
       assert_equal(ktr.pid, pid)
       if ktr.typename == "SYSCALL" then
@@ -272,6 +287,13 @@ test.ktrace = {
     assert(syscall.ioctl and sysret.ioctl, "expect open")
     assert(p1:close())
     assert(p2:close())
+  end,
+}
+
+test.ksem = {
+  test_ksem_init = function()
+    local sem = assert(S.ksem_init(3))
+    assert(S.ksem_destroy(sem))
   end,
 }
 

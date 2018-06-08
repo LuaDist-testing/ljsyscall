@@ -71,7 +71,7 @@ assert(s:bind(sa))
 
 assert(s:listen(128))
 
-ep = poll:init()
+local ep = poll:init()
 
 ep:add(s)
 
@@ -116,8 +116,8 @@ for i, ev in ep:get() do
     repeat
       local a, err = s:accept(ss, nil, "nonblock")
       if a then
-        ep:add(a.fd)
-        w[a.fd:getfd()] = a.fd
+        ep:add(a)
+        w[a:getfd()] = a
       end
     until not a
   else

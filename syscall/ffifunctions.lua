@@ -1,6 +1,5 @@
--- choose correct ffi functions for OS
-
--- TODO many are common and can be shared here
+-- Common ffi functions for all OSs
+-- note that some functions may not be available in all, but so long as prototype is standard they can go here
 
 local require, error, assert, tonumber, tostring,
 setmetatable, pairs, ipairs, unpack, rawget, rawset,
@@ -10,9 +9,6 @@ setmetatable, pairs, ipairs, unpack, rawget, rawset,
 pcall, type, table, string
 
 local cdef = require "ffi".cdef
-
--- common functions for BSD, OSX and and Linux
--- note that some functions may not be available in all, but so long as prototype is standard they can go here
 
 cdef[[
 int open(const char *pathname, int flags, mode_t mode);
@@ -90,6 +86,8 @@ int nanosleep(const struct timespec *req, struct timespec *rem);
 int getrusage(int who, struct rusage *usage);
 int getpriority(int which, int who);
 int setpriority(int which, int who, int prio);
+int sendmmsg(int sockfd, struct mmsghdr *msgvec, unsigned int vlen, unsigned int flags);
+int recvmmsg(int sockfd, struct mmsghdr *msgvec, unsigned int vlen, unsigned int flags, struct timespec *timeout);
 
 uid_t getuid(void);
 uid_t geteuid(void);
@@ -159,5 +157,30 @@ int futimes(int, const struct timeval times[2]);
 int lutimes(const char *filename, const struct timeval times[2]);
 pid_t wait4(pid_t wpid, int *status, int options, struct rusage *rusage);
 int posix_openpt(int oflag);
+
+int clock_getres(clockid_t clk_id, struct timespec *res);
+int clock_gettime(clockid_t clk_id, struct timespec *tp);
+int clock_settime(clockid_t clk_id, const struct timespec *tp);
+int clock_nanosleep(clockid_t clock_id, int flags, const struct timespec *request, struct timespec *remain);
+
+int getpagesize(void);
+
+int timer_create(clockid_t clockid, struct sigevent *sevp, timer_t *timerid);
+int timer_settime(timer_t timerid, int flags, const struct itimerspec *new_value, struct itimerspec * old_value);
+int timer_gettime(timer_t timerid, struct itimerspec *curr_value);
+int timer_delete(timer_t timerid);
+int timer_getoverrun(timer_t timerid);
+
+int adjtime(const struct timeval *delta, struct timeval *olddelta);
+
+int aio_cancel(int, struct aiocb *);
+int aio_error(const struct aiocb *);
+int aio_fsync(int, struct aiocb *);
+int aio_read(struct aiocb *);
+int aio_return(struct aiocb *);
+int aio_write(struct aiocb *);
+int lio_listio(int, struct aiocb *const *, int, struct sigevent *);
+int aio_suspend(const struct aiocb *const *, int, const struct timespec *);
+int aio_waitcomplete(struct aiocb **, struct timespec *);
 ]]
 

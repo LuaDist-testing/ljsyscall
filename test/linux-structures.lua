@@ -55,7 +55,6 @@ local function fixup_structs(abi, ctypes)
   ctypes["fd_set"] = nil -- just a pointer for the kernel, you define size
   ctypes["struct sched_param"] = nil -- not defined in our headers yet
   ctypes["struct udphdr"] = nil -- not a kernel define
-  ctypes["struct seccomp_data"] = nil -- not defined yet
   ctypes["struct ucred"] = nil -- not defined yet
   ctypes["struct msghdr"] = nil -- not defined
   ctypes.mcontext_t = nil -- not defined
@@ -68,6 +67,9 @@ local function fixup_structs(abi, ctypes)
   ctypes["struct user_cap_header"] = nil -- not defined
   ctypes["struct sockaddr_storage"] = nil -- uses __kernel_
   ctypes["struct k_sigaction"] = nil -- seems to be incorrect in headers
+  ctypes["struct mmsghdr"] = nil -- too new for our headers
+
+  ctypes["sigset_t"] = nil -- still some issues
 
   return ctypes
 end
@@ -145,8 +147,8 @@ print [[
 #include <linux/mqueue.h>
 #include <linux/virtio_pci.h>
 #include <linux/pci.h>
-//#include <linux/vfio.h>
-//#include <linux/seccomp.h>
+#include <linux/vfio.h>
+#include <linux/seccomp.h>
 
 #include <asm/statfs.h>
 #include <asm/stat.h>
@@ -185,7 +187,6 @@ local ignore_offsets = {
   st_atime_nsec = true, -- stat
   st_ctime_nsec = true, -- stat
   st_mtime_nsec = true, -- stat
-  val = true, -- sigset_t, I think renamed
   ihl = true, -- bitfield
   version = true, -- bitfield
 }

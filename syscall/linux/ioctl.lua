@@ -16,7 +16,7 @@ local s, t = types.s, types.t
 
 local strflag = require "syscall.helpers".strflag
 
-local arch = require("syscall.linux." .. abi.arch .. ".ioctl")(s)
+local arch = require("syscall.linux." .. abi.arch .. ".ioctl")
 
 local bit = require "syscall.bit"
 
@@ -112,14 +112,10 @@ end
 
 local ioctl = strflag {
 -- termios, non standard values generally 0x54 = 'T'
-  TCGETS          = {number = 0x5401, read = true, type = t.termios},
+  TCGETS          = {number = 0x5401, read = true, type = "termios"},
   TCSETS          = 0x5402,
   TCSETSW         = 0x5403,
   TCSETSF         = 0x5404,
-  TCGETA          = 0x5405,
-  TCSETA          = 0x5406,
-  TCSETAW         = 0x5407,
-  TCSETAF         = 0x5408,
   TCSBRK          = 0x5409, -- takes literal number
   TCXONC          = 0x540A,
   TCFLSH          = 0x540B, -- takes literal number
@@ -130,8 +126,8 @@ local ioctl = strflag {
   TIOCSPGRP       = 0x5410,
   TIOCOUTQ        = 0x5411,
   TIOCSTI         = 0x5412,
-  TIOCGWINSZ      = {number = 0x5413, read = true, type = t.winsize},
-  TIOCSWINSZ      = {number = 0x5414, write = true, type = t.winsize},
+  TIOCGWINSZ      = {number = 0x5413, read = true, type = "winsize"},
+  TIOCSWINSZ      = {number = 0x5414, write = true, type = "winsize"},
   TIOCMGET        = 0x5415,
   TIOCMBIS        = 0x5416,
   TIOCMBIC        = 0x5417,
@@ -156,8 +152,6 @@ local ioctl = strflag {
   TCSETS2         = _IOW('T', 0x2B, "termios2"),
   TCSETSW2        = _IOW('T', 0x2C, "termios2"),
   TCSETSF2        = _IOW('T', 0x2D, "termios2"),
-  TIOCGRS485      = 0x542E,
-  TIOCSRS485      = 0x542F,
   TIOCGPTN        = _IOR('T', 0x30, "uint"),
   TIOCSPTLCK      = _IOW('T', 0x31, "int"),
   TIOCGDEV        = _IOR('T', 0x32, "uint"),
@@ -183,6 +177,14 @@ local ioctl = strflag {
   TIOCGICOUNT     = 0x545D,
   FIOQSIZE        = 0x5460,
 -- socket ioctls from linux/sockios.h - for many of these you can use netlink instead
+  FIOSETOWN       = 0x8901,
+  SIOCSPGRP       = 0x8902,
+  FIOGETOWN       = 0x8903,
+  SIOCGPGRP       = 0x8904,
+  SIOCATMARK      = 0x8905,
+  SIOCGSTAMP      = 0x8906,
+  SIOCGSTAMPNS    = 0x8907,
+
   SIOCADDRT       = 0x890B,
   SIOCDELRT       = 0x890C,
   SIOCRTMSG       = 0x890D,
@@ -275,6 +277,9 @@ local ioctl = strflag {
 local override = arch.ioctl or {}
 if type(override) == "function" then override = override(_IO, _IOR, _IOW, _IOWR) end
 for k, v in pairs(override) do ioctl[k] = v end
+
+-- allow names for types in table ioctls
+for k, v in pairs(ioctl) do if type(v) == "table" and type(v.type) == "string" then v.type = t[v.type] end end
 
 -- alternate names
 ioctl.TIOCINQ = ioctl.FIONREAD

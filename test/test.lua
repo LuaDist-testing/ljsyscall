@@ -9,15 +9,9 @@ package.path = "./?.lua;"
 
 local strict = require "include.strict.strict"
 
-local function assert(cond, err, ...)
-  collectgarbage("collect") -- force gc, to test for bugs
-  if not cond then error(tostring(err)) end -- annoyingly, assert does not call tostring!
-  if type(cond) == "function" then return cond, err, ... end
-  if cond == true then return ... end
-  return cond, ...
-end
-
 local helpers = require "syscall.helpers"
+
+local assert = helpers.assert
 
 local S
 local tmpabi
@@ -27,15 +21,11 @@ if arg[1] == "rumplinuxshort" then short, arg[1] = true, "rumplinux" end -- don'
 
 if arg[1] == "rump" or arg[1] == "rumplinux" then
   tmpabi = require "syscall.abi"
-  -- it is too late to set this now, needs to be set before executions starts
-  if tmpabi.os == "linux" then
-    assert(os.getenv("LD_DYNAMIC_WEAK"), "you need to set LD_DYNAMIC_WEAK=1 before running this test")
-  end
   if arg[1] == "rumplinux" then
     tmpabi.types = "linux" -- monkeypatch
   end
-  local modules = {"vfs", "kern.tty", "dev", "net", "fs.tmpfs", "fs.kernfs", "fs.ptyfs",
-                   "net.net", "net.local", "net.netinet", "net.shmif"}
+  local modules = {"kern.tty", "dev", "net", "fs.tmpfs", "fs.kernfs", "fs.ptyfs",
+                   "net.net", "net.local", "net.netinet", "net.netinet6", "vfs"}
   S = require "syscall.rump.init".init(modules)
   table.remove(arg, 1)
 else
@@ -138,7 +128,7 @@ end
 
 if arg[1] == "coverage" then debug.sethook(coverage, "lc") end
 
--- TODO make locals
+-- TODO make locals in each test
 local teststring = "this is a test string"
 local size = 512
 local buf = t.buffer(size)
@@ -165,7 +155,7 @@ end
 -- type tests use reflection TODO move to seperate test file
 local ok, reflect = pcall(require, "include.ffi-reflect.reflect")
 if ok then
-test_types = {
+test_types_reflect = {
   test_allocate = function() -- create an element of every ctype
     for k, v in pairs(t) do
       if type(v) == "cdata" then
@@ -228,7 +218,7 @@ test_types = {
     assert_equal(allok, true)
   end,
   test_length = function()
-    local nolen = {fd = true, error = true, mqd = true} -- internal use
+    local nolen = {fd = true, error = true, mqd = true, timer = true} -- internal use
     local function len(x) return #x end
     local allok = true
     for k, v in pairs(t) do
@@ -237,11 +227,28 @@ test_types = {
           local x = v()
           local mt = reflect.getmetatable(x)
           local ok, err = pcall(len, x)
-          if mt and not ok and not nolen[k] then print("no len on " .. k); allok = false end
+          if mt and not ok and not nolen[k] then
+            print("no len on " .. k)
+            allok = false
+            end
         end
       end
     end
     assert_equal(allok, true)
+  end,
+  test_tostring = function()
+    for k, v in pairs(t) do
+      if type(v) == "cdata" then
+        local x, s
+        if reflect.typeof(v).vla then
+          x = v(1)
+          s = tostring(v)
+        else
+          x = v()
+          s = tostring(v)
+        end
+      end
+    end
   end,
 }
 end
@@ -375,7 +382,6 @@ test_open_close = {
     assert(S.access("/dev/null", "r"), "expect access to say can read /dev/null")
     assert(S.access("/dev/null", c.OK.R), "expect access to say can read /dev/null")
     assert(S.access("/dev/null", "w"), "expect access to say can write /dev/null")
-    assert(not S.access("/dev/null", "x"), "expect access to say cannot execute /dev/null")
   end,
   test_fd_gc = function()
     local fd = assert(S.open("/dev/null", "rdonly"))
@@ -407,6 +413,8 @@ test_read_write = {
   teardown = clean,
   test_read = function()
     local fd = assert(S.open("/dev/zero"))
+    local size = 64
+    local buf = t.buffer(size)
     for i = 0, size - 1 do buf[i] = 255 end
     local n = assert(fd:read(buf, size))
     assert(n >= 0, "should not get error reading from /dev/zero")
@@ -556,10 +564,19 @@ test_address_names = {
       assert_equal(tostring(addr), a)
     end
   end,
-  test_util_broadcast = function()
-    assert_equal(tostring(util.broadcast("0.0.0.0", 32)), "0.0.0.0")
-    assert_equal(tostring(util.broadcast("10.10.20.1", 24)), "10.10.20.255")
-    assert_equal(tostring(util.broadcast("0.0.0.0", 0)), "255.255.255.255")
+  test_util_netmask_broadcast = function()
+    local addr = t.in_addr("0.0.0.0")
+    local nb = addr:get_mask_bcast(32)
+    assert_equal(tostring(nb.broadcast), "0.0.0.0")
+    assert_equal(tostring(nb.netmask), "0.0.0.0")
+    local addr = t.in_addr("10.10.20.1")
+    local nb = addr:get_mask_bcast(24)
+    assert_equal(tostring(nb.broadcast), "10.10.20.255")
+    assert_equal(tostring(nb.netmask), "0.0.0.255")
+    local addr = t.in_addr("0.0.0.0")
+    local nb = addr:get_mask_bcast(0)
+    assert_equal(tostring(nb.broadcast), "255.255.255.255")
+    assert_equal(tostring(nb.netmask), "255.255.255.255")
   end,
 }
 
@@ -721,6 +738,7 @@ test_file_operations = {
     local stat = assert(S.stat("/dev/zero"))
     assert_equal(stat.nlink, 1, "expect link count on /dev/zero to be 1")
     assert(stat.ischr, "expect /dev/zero to be a character device")
+    assert_equal(stat.typename, "char device")
   end,
   test_stat_file = function()
     local fd = assert(S.creat(tmpfile, "rwxu"))
@@ -729,12 +747,14 @@ test_file_operations = {
     local stat = assert(S.stat(tmpfile))
     assert_equal(stat.size, 4, "expect size 4")
     assert(stat.isreg, "regular file")
+    assert_equal(stat.typename, "file")
     assert(S.unlink(tmpfile))
   end,
   test_stat_directory = function()
     local fd = assert(S.open("/"))
     local stat = assert(fd:stat())
     assert(stat.isdir, "expect / to be a directory")
+    assert_equal(stat.typename, "directory")
     assert(fd:close())
   end,
   test_stat_symlink = function()
@@ -747,12 +767,20 @@ test_file_operations = {
     assert(S.unlink(tmpfile))
     assert(S.unlink(tmpfile2))
   end,
+  test_stat_aliases = function()
+    local st = S.stat(".")
+    assert(st.access)
+    assert(st.modification)
+    assert(st.change)
+    assert_equal(st.typename, "directory")
+  end,
   test_lstat_symlink = function()
     local fd = assert(S.creat(tmpfile2, "rwxu"))
     assert(fd:close())
     assert(S.symlink(tmpfile2, tmpfile))
     local stat = assert(S.lstat(tmpfile))
     assert(stat.islnk, "expect lstat to stat the symlink")
+    assert_equal(stat.typename, "link")
     assert(not stat.isreg, "lstat should find symlink not regular file")
     assert(S.unlink(tmpfile))
     assert(S.unlink(tmpfile2))
@@ -774,7 +802,7 @@ test_file_operations = {
     assert(fd:close())
   end,
   test_mknod_chr_root = function()
-    assert(S.mknod(tmpfile, "fchr,0666", t.device(1, 5)))
+    assert(S.mknod(tmpfile, "fchr,0666", {1, 5}))
     local stat = assert(S.stat(tmpfile))
     assert(stat.ischr, "expect to be a character device")
     assert_equal(stat.rdev.major, 1)
@@ -788,8 +816,8 @@ test_file_operations = {
     local st2 = assert(S.stat(tmpfile))
     assert_equal(st2.rdev.dev, st.rdev.dev)
     local fd, err = S.open(tmpfile, "rdonly")
-    if not fd and err.OPNOTSUPP then error "skipped" end -- FreeBSD only allows device nodes to be used on devfs
-    assert(fd)
+    if not fd and (err.OPNOTSUPP or err.NXIO) then error "skipped" end -- FreeBSD, OpenBSD have restrictibe device policies
+    assert(fd, err)
     assert(S.unlink(tmpfile))
     local buf = t.buffer(64)
     local n = assert(fd:read(buf, 64))
@@ -871,17 +899,14 @@ test_file_operations_at = {
   end,
   test_openat = function()
     if not S.openat then error "skipped" end
-    local fd, err = S.openat("fdcwd", tmpfile, "rdwr,creat", "rwxu")
-    if not fd and err.NOSYS then error "skipped" end
+    local fd = assert(S.openat("fdcwd", tmpfile, "rdwr,creat", "rwxu"))
     assert(S.unlink(tmpfile))
     assert(fd:close())
   end,
   test_faccessat = function()
     if not S.faccessat then error "skipped" end
     local fd = S.open("/dev")
-    local ok, err = fd:faccessat("null", "r")
-    if not ok and err.NOSYS then error "skipped" end -- NetBSD 6 has symbols but they do nothing
-    assert(ok)
+    assert(fd:faccessat("null", "r"))
     assert(fd:faccessat("null", c.OK.R), "expect access to say can read /dev/null")
     assert(fd:faccessat("null", "w"), "expect access to say can write /dev/null")
     assert(not fd:faccessat("/dev/null", "x"), "expect access to say cannot execute /dev/null")
@@ -891,9 +916,7 @@ test_file_operations_at = {
     if not (S.symlinkat and S.readlinkat) then error "skipped" end
     local dirfd = assert(S.open("."))
     local fd = assert(S.creat(tmpfile, "RWXU"))
-    local ok, err = S.symlinkat(tmpfile, dirfd, tmpfile2)
-    if not ok and err.NOSYS then error "skipped" end -- Netbsd6 partial implementation
-    assert(ok)
+    assert(S.symlinkat(tmpfile, dirfd, tmpfile2))
     local s = assert(S.readlinkat(dirfd, tmpfile2))
     assert_equal(s, tmpfile, "should be able to read symlink")
     assert(S.unlink(tmpfile2))
@@ -904,9 +927,7 @@ test_file_operations_at = {
   test_mkdirat_unlinkat = function()
     if not (S.mkdirat and S.unlinkat) then error "skipped" end
     local fd = assert(S.open("."))
-    local ok, err = fd:mkdirat(tmpfile, "RWXU")
-    if not ok and err.NOSYS then error "skipped" end
-    assert(ok)
+    assert(fd:mkdirat(tmpfile, "RWXU"))
     assert(fd:unlinkat(tmpfile, "removedir"))
     assert(not S.stat(tmpfile), "expect dir gone")
     assert(fd:close())
@@ -914,9 +935,7 @@ test_file_operations_at = {
   test_renameat = function()
     if not S.renameat then error "skipped" end
     assert(util.writefile(tmpfile, teststring, "RWXU"))
-    local ok, err = S.renameat("fdcwd", tmpfile, "fdcwd", tmpfile2)
-    if not ok and err.NOSYS then error "skipped" end
-    assert(ok)
+    assert(S.renameat("fdcwd", tmpfile, "fdcwd", tmpfile2))
     assert(not S.stat(tmpfile))
     assert(S.stat(tmpfile2))
     assert(S.unlink(tmpfile2))
@@ -925,9 +944,7 @@ test_file_operations_at = {
     if not S.fstatat then error "skipped" end
     local fd = assert(S.open("."))
     assert(util.writefile(tmpfile, teststring, "RWXU"))
-    local stat, err = fd:fstatat(tmpfile)
-    if not stat and err.NOSYS then error "skipped" end
-    assert(stat)
+    local stat = assert(fd:fstatat(tmpfile))
     assert(stat.size == #teststring, "expect length to br what was written")
     assert(fd:close())
     assert(S.unlink(tmpfile))
@@ -935,9 +952,7 @@ test_file_operations_at = {
   test_fstatat_fdcwd = function()
     if not S.fstatat then error "skipped" end
     assert(util.writefile(tmpfile, teststring, "RWXU"))
-    local stat, err = S.fstatat("fdcwd", tmpfile, nil, "symlink_nofollow")
-    if not stat and err.NOSYS then error "skipped" end
-    assert(stat)
+    local stat = assert(S.fstatat("fdcwd", tmpfile, nil, "symlink_nofollow"))
     assert(stat.size == #teststring, "expect length to be what was written")
     assert(S.unlink(tmpfile))
   end,
@@ -945,9 +960,7 @@ test_file_operations_at = {
     if not S.fchmodat then error "skipped" end
     local dirfd = assert(S.open("."))
     local fd = assert(S.creat(tmpfile, "RWXU"))
-    local ok, err = dirfd:fchmodat(tmpfile, "RUSR, WUSR")
-    if not ok and err.NOSYS then error "skipped" end -- NetBSD6 has symbol
-    assert(ok)
+    assert(dirfd:fchmodat(tmpfile, "RUSR, WUSR"))
     assert(S.access(tmpfile, "rw"))
     assert(S.unlink(tmpfile))
     assert(fd:close())
@@ -957,9 +970,7 @@ test_file_operations_at = {
     if not S.fchownat then error "skipped" end
     local dirfd = assert(S.open("."))
     local fd = assert(S.creat(tmpfile, "RWXU"))
-    local ok, err = dirfd:fchownat(tmpfile, 66, 55, "symlink_nofollow")
-    if not ok and err.NOSYS then error "skipped" end
-    assert(ok)
+    assert(dirfd:fchownat(tmpfile, 66, 55, "symlink_nofollow"))
     local stat = S.stat(tmpfile)
     assert_equal(stat.uid, 66, "expect uid changed")
     assert_equal(stat.gid, 55, "expect gid changed")
@@ -970,9 +981,7 @@ test_file_operations_at = {
   test_mkfifoat = function()
     if not S.mkfifoat then error "skipped" end
     local fd = assert(S.open("."))
-    local ok, err = S.mkfifoat(fd, tmpfile, "rwxu")
-    if not ok and err.NOSYS then error "skipped" end
-    assert(ok)
+    assert(S.mkfifoat(fd, tmpfile, "rwxu"))
     local stat = assert(S.stat(tmpfile))
     assert(stat.isfifo, "expect to be a fifo")
     assert(fd:close())
@@ -981,9 +990,7 @@ test_file_operations_at = {
   test_mknodat_root = function()
     if not S.mknodat then error "skipped" end
     local fd = assert(S.open("."))
-    local ok, err = fd:mknodat(tmpfile, "fchr,0666", t.device(1, 5))
-    if not ok and err.NOSYS then error "skipped" end
-    assert(ok)
+    assert(fd:mknodat(tmpfile, "fchr,0666", t.device(1, 5)))
     local stat = assert(S.stat(tmpfile))
     assert(stat.ischr, "expect to be a character device")
     assert_equal(stat.rdev.major, 1)
@@ -1147,6 +1154,25 @@ test_largefile = {
     assert_equal(ffi.string(b3, 3), "tev")
     assert(S.unlink(tmpfile))
   end,
+  test_open = function()
+    local fd = assert(S.open(tmpfile, "creat,wronly,trunc", "RWXU"))
+    local offset = largeval
+    assert(fd:truncate(offset))
+    local st = assert(fd:stat())
+    assert_equal(st.size, offset)
+    assert(S.unlink(tmpfile))
+    assert(fd:close())
+  end,
+  test_openat = function()
+    if not S.openat then error "skipped" end
+    local fd = assert(S.openat("fdcwd", tmpfile, "creat,wronly,trunc", "RWXU"))
+    local offset = largeval
+    assert(fd:truncate(offset))
+    local st = assert(fd:stat())
+    assert_equal(st.size, offset)
+    assert(S.unlink(tmpfile))
+    assert(fd:close())
+  end,
 }
 
 test_ids = {
@@ -1226,82 +1252,7 @@ test_sockets_pipes = {
     assert(pr:close())
     assert(pw:close())
   end,
-  test_inet_socket = function() -- TODO break this test up
-    local s = assert(S.socket("inet", "stream"))
-    assert(s:nonblock())
-    local sa = assert(t.sockaddr_in(0, "loopback"))
-    assert(sa.sin_family == 2, "expect family on inet socket to be 2")
-    assert(s:bind(sa))
-    local ba = assert(s:getsockname())
-    assert_equal(ba.sin_family, 2, "expect family on getsockname to be 2")
-    assert(s:listen()) -- will fail if we did not bind
-    local c = assert(S.socket("inet", "stream")) -- client socket
-    local ok, err = c:connect(ba)
-    local a = s:accept()
-    local ok, err = c:connect(ba)
-    assert(ok or err.ISCONN);
-    assert(s:block()) -- force accept to wait
-    a = a or assert(s:accept())
-    assert(a:block())
-    local ba = assert(c:getpeername())
-    assert(ba.sin_family == 2, "expect ipv4 connection")
-    assert(tostring(ba.sin_addr) == "127.0.0.1", "expect peer on localhost")
-    assert(ba.sin_addr.s_addr == t.in_addr("loopback").s_addr, "expect peer on localhost")
-    local n = assert(c:send(teststring))
-    assert(n == #teststring, "should be able to write out short string")
-    local str = assert(a:read(nil, #teststring))
-    assert_equal(str, teststring)
-    -- test scatter gather
-    local b0 = t.buffer(4)
-    local b1 = t.buffer(3)
-    ffi.copy(b0, "test", 4) -- string init adds trailing 0 byte
-    ffi.copy(b1, "ing", 3)
-    n = assert(c:writev({{b0, 4}, {b1, 3}}))
-    assert(n == 7, "expect writev to write 7 bytes")
-    b0 = t.buffer(3)
-    b1 = t.buffer(4)
-    local iov = t.iovecs{{b0, 3}, {b1, 4}}
-    n = assert(a:readv(iov))
-    assert_equal(n, 7, "expect readv to read 7 bytes")
-    assert(ffi.string(b0, 3) == "tes" and ffi.string(b1, 4) == "ting", "expect to get back same stuff")
-    assert(c:close())
-    assert(a:close())
-    assert(s:close())
-  end,
-  test_inet_socket_readv = function() -- part of above, no netbsd bug (but commenting out writev does trigger)
-    local s = assert(S.socket("inet", "stream"))
-    assert(s:nonblock())
-    local sa = assert(t.sockaddr_in(0, "loopback"))
-    assert(sa.sin_family == 2, "expect family on inet socket to be 2")
-    assert(s:bind(sa))
-    local ba = assert(s:getsockname())
-    assert_equal(ba.sin_family, 2, "expect family on getsockname to be 2")
-    assert(s:listen()) -- will fail if we did not bind
-    local c = assert(S.socket("inet", "stream")) -- client socket
-    local ok, err = c:connect(ba)
-    local a = s:accept()
-    local ok, err = c:connect(ba)
-    assert(ok or err.ISCONN);
-    assert(s:block()) -- force accept to wait
-    a = a or assert(s:accept())
-    assert(a:block())
-    local b0 = t.buffer(4)
-    local b1 = t.buffer(3)
-    ffi.copy(b0, "test", 4) -- string init adds trailing 0 byte
-    ffi.copy(b1, "ing", 3)
-    local n = assert(c:writev({{b0, 4}, {b1, 3}}))
-    assert(n == 7, "expect writev to write 7 bytes")
-    b0 = t.buffer(3)
-    b1 = t.buffer(4)
-    local iov = t.iovecs{{b0, 3}, {b1, 4}}
-    n = assert(a:readv(iov))
-    assert_equal(n, 7, "expect readv to read 7 bytes")
-    assert(ffi.string(b0, 3) == "tes" and ffi.string(b1, 4) == "ting", "expect to get back same stuff")
-    assert(c:close())
-    assert(a:close())
-    assert(s:close())
-  end,
-  test_unix_socketpair = function()
+  test_socketpair = function()
     local sv1, sv2 = assert(S.socketpair("unix", "stream"))
     assert(sv1:write("test"))
     local r = assert(sv2:read())
@@ -1309,9 +1260,233 @@ test_sockets_pipes = {
     assert(sv1:close())
     assert(sv2:close())
   end,
+  test_inet_socket = function() -- TODO break this test up
+    local ss, err = S.socket("inet", "stream")
+    if not ss and err.AFNOSUPPORT then error "skipped" end
+    assert(ss, err)
+    assert(ss:nonblock())
+    local sa = assert(t.sockaddr_in(0, "loopback"))
+    assert_equal(sa.family, c.AF.INET)
+    assert(ss:bind(sa))
+    local ba = assert(ss:getsockname())
+    assert_equal(ba.family, c.AF.INET)
+    assert(ss:listen()) -- will fail if we did not bind
+    local cs, err = S.socket("inet", "stream")
+    if not cs and err.AFNOSUPPORT then error "skipped" end
+    assert(cs, err)
+    local ok, err = cs:connect(ba)
+    local as = ss:accept()
+    local ok, err = cs:connect(ba)
+    assert(ok or err.ISCONN);
+    assert(ss:block()) -- force accept to wait
+    as = as or assert(ss:accept())
+    assert(as:block())
+    local ba = assert(cs:getpeername())
+    assert_equal(ba.family, c.AF.INET)
+    assert_equal(tostring(ba.addr), "127.0.0.1")
+    assert_equal(ba.sin_addr.s_addr, t.in_addr("loopback").s_addr)
+    local n = assert(cs:send(teststring))
+    assert_equal(n, #teststring)
+    local str = assert(as:read(nil, #teststring))
+    assert_equal(str, teststring)
+    -- test scatter gather
+    local b0 = t.buffer(4)
+    local b1 = t.buffer(3)
+    ffi.copy(b0, "test", 4) -- string init adds trailing 0 byte
+    ffi.copy(b1, "ing", 3)
+    n = assert(cs:writev({{b0, 4}, {b1, 3}}))
+    assert_equal(n, 7)
+    b0 = t.buffer(3)
+    b1 = t.buffer(4)
+    local iov = t.iovecs{{b0, 3}, {b1, 4}}
+    n = assert(as:readv(iov))
+    assert_equal(n, 7)
+    assert(ffi.string(b0, 3) == "tes" and ffi.string(b1, 4) == "ting", "expect to get back same stuff")
+    assert(cs:close())
+    assert(as:close())
+    assert(ss:close())
+  end,
+  test_inet_socket_readv = function() -- part of above, no netbsd bug (but commenting out writev does trigger)
+    local ss, err = S.socket("inet", "stream")
+    if not ss and err.AFNOSUPPORT then error "skipped" end
+    assert(ss, err)
+    assert(ss:nonblock())
+    local sa = assert(t.sockaddr_in(0, "loopback"))
+    assert_equal(sa.family, c.AF.INET)
+    assert(ss:bind(sa))
+    local ba = assert(ss:getsockname())
+    assert_equal(ba.family, c.AF.INET)
+    assert(ss:listen()) -- will fail if we did not bind
+    local cs = assert(S.socket("inet", "stream")) -- client socket
+    local ok, err = cs:connect(ba)
+    local as = ss:accept()
+    local ok, err = cs:connect(ba)
+    assert(ok or err.ISCONN);
+    assert(ss:block()) -- force accept to wait
+    as = as or assert(ss:accept())
+    assert(as:block())
+    local b0 = t.buffer(4)
+    local b1 = t.buffer(3)
+    ffi.copy(b0, "test", 4) -- string init adds trailing 0 byte
+    ffi.copy(b1, "ing", 3)
+    local n = assert(cs:writev({{b0, 4}, {b1, 3}}))
+    assert(n == 7, "expect writev to write 7 bytes")
+    b0 = t.buffer(3)
+    b1 = t.buffer(4)
+    local iov = t.iovecs{{b0, 3}, {b1, 4}}
+    n = assert(as:readv(iov))
+    assert_equal(n, 7, "expect readv to read 7 bytes")
+    assert(ffi.string(b0, 3) == "tes" and ffi.string(b1, 4) == "ting", "expect to get back same stuff")
+    assert(cs:close())
+    assert(as:close())
+    assert(ss:close())
+  end,
+  test_inet6_socket = function() -- TODO break this test up
+    local ss, err = S.socket("inet6", "stream")
+    if not ss and err.AFNOSUPPORT then error "skipped" end
+    assert(ss, err)
+    assert(ss:nonblock())
+    local sa = assert(t.sockaddr_in6(0, "loopback"))
+    assert_equal(sa.family, c.AF.INET6)
+    assert(ss:bind(sa))
+    local ba = assert(ss:getsockname())
+    assert_equal(ba.family, c.AF.INET6)
+    assert(ss:listen()) -- will fail if we did not bind
+    local cs = assert(S.socket("inet6", "stream")) -- client socket
+    local ok, err = cs:connect(ba)
+    local as = ss:accept()
+    local ok, err = cs:connect(ba)
+    assert(ok or err.ISCONN);
+    assert(ss:block()) -- force accept to wait
+    as = as or assert(ss:accept())
+    assert(as:block())
+    local ba = assert(cs:getpeername())
+    assert_equal(ba.family, c.AF.INET6)
+    assert_equal(tostring(ba.addr), "::1")
+    local n = assert(cs:send(teststring))
+    assert_equal(n, #teststring)
+    local str = assert(as:read(nil, #teststring))
+    assert_equal(str, teststring)
+    -- test scatter gather
+    local b0 = t.buffer(4)
+    local b1 = t.buffer(3)
+    ffi.copy(b0, "test", 4) -- string init adds trailing 0 byte
+    ffi.copy(b1, "ing", 3)
+    n = assert(cs:writev({{b0, 4}, {b1, 3}}))
+    assert_equal(n, 7)
+    b0 = t.buffer(3)
+    b1 = t.buffer(4)
+    local iov = t.iovecs{{b0, 3}, {b1, 4}}
+    n = assert(as:readv(iov))
+    assert_equal(n, 7)
+    assert(ffi.string(b0, 3) == "tes" and ffi.string(b1, 4) == "ting", "expect to get back same stuff")
+    assert(cs:close())
+    assert(as:close())
+    assert(ss:close())
+  end,
+  test_inet6_inet_conn_socket = function() -- TODO break this test up
+    local ss, err = S.socket("inet6", "stream")
+    if not ss and err.AFNOSUPPORT then error "skipped" end
+    assert(ss, err)
+    assert(ss:nonblock())
+    local ok, err = ss:setsockopt(c.IPPROTO.IPV6, c.IPV6.V6ONLY, 0)
+    if not ok and err.INVAL then error "skipped" end -- OpenBSD does not support inet on inet6 sockets
+    local sa = assert(t.sockaddr_in6(0, "any"))
+    assert_equal(sa.family, c.AF.INET6)
+    assert(ss:bind(sa))
+    local ba = assert(ss:getsockname())
+    assert_equal(ba.family, c.AF.INET6)
+    assert(ss:listen()) -- will fail if we did not bind
+    local cs = assert(S.socket("inet6", "stream")) -- ipv6 client socket, ok
+    local ba6 = t.sockaddr_in6(ba.port, "loopback") 
+    local ok, err = cs:connect(ba6)
+    local as = ss:accept()
+    local ok, err = cs:connect(ba6)
+    assert(ok or err.ISCONN, "unexpected error " .. tostring(err));
+    assert(ss:block()) -- force accept to wait
+    as = as or assert(ss:accept())
+    assert(as:block())
+    local ba = assert(cs:getpeername())
+    assert_equal(ba.family, c.AF.INET6)
+    assert_equal(tostring(ba.addr), "::1")
+    local n = assert(cs:send(teststring))
+    assert_equal(n, #teststring)
+    local str = assert(as:read(nil, #teststring))
+    assert_equal(str, teststring)
+    assert(cs:close())
+    assert(as:close())
+    -- second connection
+    assert(ss:nonblock())
+    local cs, err = S.socket("inet", "stream") -- ipv4 client socket, ok
+    if not cs and err.AFNOSUPPORT then error "skipped" end
+    assert(cs, err)
+    local ba4 = t.sockaddr_in(ba.port, "loopback") -- TODO add function to convert sockaddr in6 to in4
+    local ok, err = cs:connect(ba4)
+    local as = ss:accept()
+    local ok, err = cs:connect(ba4)
+    assert(ok or err.ISCONN, "unexpected error " .. tostring(err));
+    assert(ss:block()) -- force accept to wait
+    as = as or assert(ss:accept())
+    assert(as:block())
+    local ba = assert(cs:getpeername())
+    assert_equal(ba.family, c.AF.INET)
+    assert_equal(tostring(ba.addr), "127.0.0.1")
+    local n = assert(cs:send(teststring))
+    assert_equal(n, #teststring)
+    local str = assert(as:read(nil, #teststring))
+    assert_equal(str, teststring)
+    assert(cs:close())
+    assert(as:close())
+    assert(ss:close())
+  end,
+  test_inet6_only_inet_conn_socket = function()
+    local ss, err = S.socket("inet6", "stream")
+    if not ss and err.AFNOSUPPORT then error "skipped" end
+    assert(ss, err)
+    assert(ss:nonblock())
+    assert(ss:setsockopt(c.IPPROTO.IPV6, c.IPV6.V6ONLY, 1))
+    local sa = assert(t.sockaddr_in6(0, "loopback"))
+    assert_equal(sa.family, c.AF.INET6)
+    assert(ss:bind(sa))
+    local ba = assert(ss:getsockname())
+    assert_equal(ba.family, c.AF.INET6)
+    assert(ss:listen()) -- will fail if we did not bind
+    local cs = assert(S.socket("inet6", "stream")) -- ipv6 client socket, ok
+    local ok, err = cs:connect(ba)
+    local as = ss:accept()
+    local ok, err = cs:connect(ba)
+    assert(ok or err.ISCONN, "unexpected error " .. tostring(err));
+    assert(ss:block()) -- force accept to wait
+    as = as or assert(ss:accept())
+    assert(as:block())
+    local ba = assert(cs:getpeername())
+    assert_equal(ba.family, c.AF.INET6)
+    assert_equal(tostring(ba.addr), "::1")
+    local n = assert(cs:send(teststring))
+    assert_equal(n, #teststring)
+    local str = assert(as:read(nil, #teststring))
+    assert_equal(str, teststring)
+    assert(cs:close())
+    assert(as:close())
+    -- second connection
+    assert(ss:nonblock())
+    local cs, err = S.socket("inet", "stream") -- ipv4 client socket, will fail to connect
+    if not cs and err.AFNOSUPPORT then error "skipped" end
+    assert(cs, err)
+    local ba4 = t.sockaddr_in(ba.port, "loopback") -- TODO add function to convert sockaddr in6 to in4
+    local ok, err = cs:connect(ba4)
+    assert(not ok and err.CONNREFUSED, "expect to get connection refused")
+    assert(cs:close())
+    assert(as:close())
+    assert(ss:close())
+  end,
   test_udp_socket = function()
-    local ss = assert(S.socket("inet", "dgram"))
-    local cs = assert(S.socket("inet", "dgram"))
+    local ss, err = S.socket("inet", "dgram")
+    if not ss and err.AFNOSUPPORT then error "skipped" end
+    assert(ss, err)
+    local cs, err = S.socket("inet", "dgram")
+    if not cs and err.AFNOSUPPORT then error "skipped" end
+    assert(cs, err)
     local sa = assert(t.sockaddr_in(0, "loopback"))
     assert(ss:bind(sa))
     local bsa = ss:getsockname() -- find bound address
@@ -1321,30 +1496,34 @@ test_sockets_pipes = {
     assert(ss:close())
     assert(cs:close())
   end,
-  test_ipv6_socket = function()
-    local loop6 = "::1"
+  test_inet6_udp_socket = function()
     local ss, err = S.socket("inet6", "dgram")
     if not ss and err.AFNOSUPPORT then error "skipped" end
-    assert(ss)
+    assert(ss, err)
+    local loop6 = "::1"
     local cs = assert(S.socket("inet6", "dgram"))
     local sa = assert(t.sockaddr_in6(0, loop6))
     assert(ss:bind(sa))
     local bsa = ss:getsockname() -- find bound address
-    local n = assert(cs:sendto(teststring, nil, 0, bsa))
+    local n = assert(cs:sendto(teststring, nil, c.MSG.NOSIGNAL or 0, bsa)) -- got a sigpipe here on MIPS
     local f = assert(ss:recv(buf, size))
     assert_equal(f, #teststring)
     assert(cs:close())
     assert(ss:close())
   end,
   test_recvfrom = function()
-    local ss = assert(S.socket("inet", "dgram"))
-    local cs = assert(S.socket("inet", "dgram"))
+    local ss, err = S.socket("inet", "dgram")
+    if not ss and err.AFNOSUPPORT then error "skipped" end
+    assert(ss, err)
+    local cs, err = S.socket("inet", "dgram")
+    if not cs and err.AFNOSUPPORT then error "skipped" end
+    assert(cs, err)
     local sa = t.sockaddr_in(0, "loopback")
     assert(ss:bind(sa))
     assert(cs:bind(sa))
     local bsa = ss:getsockname()
     local csa = cs:getsockname()
-    local n = assert(cs:sendto(teststring, #teststring, 0, bsa))
+    local n = assert(cs:sendto(teststring, #teststring, c.MSG.NOSIGNAL or 0, bsa))
     local rsa = t.sockaddr_in()
     local f = assert(ss:recvfrom(buf, size, "", rsa))
     assert_equal(f, #teststring)
@@ -1354,14 +1533,18 @@ test_sockets_pipes = {
     assert(cs:close())
   end,
   test_recvfrom_alloc = function()
-    local ss = assert(S.socket("inet", "dgram"))
-    local cs = assert(S.socket("inet", "dgram"))
+    local ss, err = S.socket("inet", "dgram")
+    if not ss and err.AFNOSUPPORT then error "skipped" end
+    assert(ss, err)
+    local cs, err = S.socket("inet", "dgram")
+    if not cs and err.AFNOSUPPORT then error "skipped" end
+    assert(cs, err)
     local sa = t.sockaddr_in(0, "loopback")
     assert(ss:bind(sa))
     assert(cs:bind(sa))
     local bsa = ss:getsockname()
     local csa = cs:getsockname()
-    local n = assert(cs:sendto(teststring, #teststring, 0, bsa))
+    local n = assert(cs:sendto(teststring, #teststring, c.MSG.NOSIGNAL or 0, bsa))
     local f, rsa = assert(ss:recvfrom(buf, size)) -- will allocate and return address
     assert_equal(f, #teststring)
     assert_equal(rsa.port, csa.port)
@@ -1387,36 +1570,77 @@ test_sockets_pipes = {
     assert(fd:close())
   end,
   test_getsockopt_acceptconn = function()
-    local s = assert(S.socket("inet", "stream"))
+    local s, err = S.socket("inet", "stream")
+    if not s and err.AFNOSUPPORT then error "skipped" end
+    assert(s, err)
     local sa = t.sockaddr_in(0, "loopback")
     assert(s:bind(sa))
     local ok, err = s:getsockopt("socket", "acceptconn")
     if not ok and err.NOPROTOOPT then error "skipped" end -- NetBSD 6, OSX do not support this on socket level
+    assert(ok, err)
     assert_equal(ok, 0)
     assert(s:close())
   end,
   test_sockopt_sndbuf = function()
-    local s = assert(S.socket("inet", "stream"))
+    local s, err = S.socket("inet", "stream")
+    if not s and err.AFNOSUPPORT then error "skipped" end
+    assert(s, err)
+    local n = assert(s:getsockopt("socket", "sndbuf"))
+    assert(n > 0)
+    assert(s:close())
+  end,
+  test_sockopt_sndbuf_inet6 = function()
+    local s, err = S.socket("inet6", "stream")
+    if not s and err.AFNOSUPPORT then error "skipped" end
+    assert(s, err)
     local n = assert(s:getsockopt("socket", "sndbuf"))
     assert(n > 0)
     assert(s:close())
   end,
   test_setsockopt_keepalive = function()
-    local s = assert(S.socket("inet", "stream"))
+    local s, err = S.socket("inet", "stream")
+    if not s and err.AFNOSUPPORT then error "skipped" end
+    assert(s, err)
     local sa = t.sockaddr_in(0, "loopback")
     assert(s:bind(sa))
     assert_equal(s:getsockopt("socket", "keepalive"), 0)
     assert(s:setsockopt("socket", "keepalive", 1))
-    assert(s:getsockopt("socket", "keepalive") ~= 0) -- FreeBSD does not return 1
+    assert(s:getsockopt("socket", "keepalive") ~= 0)
+    assert(s:close())
+  end,
+  test_setsockopt_keepalive_inet6 = function()
+    local s, err = S.socket("inet6", "stream")
+    if not s and err.AFNOSUPPORT then error "skipped" end
+    assert(s, err)
+    local s = assert(S.socket("inet6", "stream"))
+    local sa = t.sockaddr_in6(0, "loopback")
+    assert(s:bind(sa))
+    assert_equal(s:getsockopt("socket", "keepalive"), 0)
+    assert(s:setsockopt("socket", "keepalive", 1))
+    assert(s:getsockopt("socket", "keepalive") ~= 0)
     assert(s:close())
   end,
   test_sockopt_tcp_nodelay = function()
-    local s = assert(S.socket("inet", "stream"))
+    local s, err = S.socket("inet", "stream")
+    if not s and err.AFNOSUPPORT then error "skipped" end
+    assert(s, err)
     local sa = t.sockaddr_in(0, "loopback")
     assert(s:bind(sa))
     assert_equal(s:getsockopt(c.IPPROTO.TCP, c.TCP.NODELAY), 0)
     assert(s:setsockopt(c.IPPROTO.TCP, c.TCP.NODELAY, 1))
-    --assert(s:getsockopt(c.IPPROTO.TCP, c.TCP.NODELAY) ~= 0) -- TODO why does this fail on FreeBSD?
+    assert(s:getsockopt(c.IPPROTO.TCP, c.TCP.NODELAY) ~= 0)
+    assert(s:close())
+  end,
+  test_sockopt_tcp_nodelay_inet6 = function()
+    local s, err = S.socket("inet6", "stream")
+    if not s and err.AFNOSUPPORT then error "skipped" end
+    assert(s, err)
+    local s = assert(S.socket("inet6", "stream"))
+    local sa = t.sockaddr_in6(0, "loopback")
+    assert(s:bind(sa))
+    assert_equal(s:getsockopt(c.IPPROTO.TCP, c.TCP.NODELAY), 0)
+    assert(s:setsockopt(c.IPPROTO.TCP, c.TCP.NODELAY, 1))
+    assert(s:getsockopt(c.IPPROTO.TCP, c.TCP.NODELAY) ~= 0)
     assert(s:close())
   end,
   test_accept_noaddr = function()
@@ -1441,6 +1665,72 @@ test_sockets_pipes = {
     assert((not a) and err.AGAIN, "expect again: " .. tostring(err))
     assert(s:close())
     assert(S.unlink(tmpfile))
+  end,
+  test_send = function()
+    local buf = t.buffer(10)
+    local sv1, sv2 = assert(S.socketpair("unix", "stream"))
+    assert(sv1:send("test"))
+    local r = assert(sv2:recv(buf, 10))
+    assert_equal(r, #"test")
+    assert_equal(ffi.string(buf, r), "test")
+    assert(sv1:close())
+    assert(sv2:close())
+  end,
+  test_sendto = function()
+    local buf = t.buffer(10)
+    local sv1, sv2 = assert(S.socketpair("unix", "stream"))
+    assert(sv1:sendto("test"))
+    local r, addr = assert(sv2:recvfrom(buf, 10))
+    assert_equal(r, #"test")
+    assert_equal(ffi.string(buf, r), "test")
+    --assert_equal(addr.family, c.AF.UNIX) -- TODO addrlen seen as 0 so not filled in?
+    assert(sv1:close())
+    assert(sv2:close())
+  end,
+  test_sendto_src = function()
+    local buf = t.buffer(10)
+    local sa = t.sockaddr_un()
+    local sv1, sv2 = assert(S.socketpair("unix", "stream"))
+    assert(sv1:sendto("test"))
+    local r = assert(sv2:recvfrom(buf, 10, 0, sa))
+    assert_equal(r, #"test")
+    assert_equal(ffi.string(buf, r), "test")
+    assert_equal(sa.family, c.AF.UNIX) -- TODO addrlen seen as 0 so not filled in?
+    assert(sv1:close())
+    assert(sv2:close())
+  end,
+  test_sendmsg = function()
+    local buf = t.buffer(4)
+    ffi.copy(buf, "test", 4)
+    local iov = t.iovecs{{buf, 4}}
+    local sa = t.sockaddr_storage()
+    local sv1, sv2 = assert(S.socketpair("unix", "stream"))
+    local msg = t.msghdr{iov = iov}
+    assert(sv1:sendmsg(msg))
+    local msg = t.msghdr{name = sa, iov = iov}
+    local r = assert(sv2:recvmsg(msg))
+    assert_equal(r, #"test")
+    assert_equal(ffi.string(buf, r), "test")
+    --assert_equal(sa.family, c.AF.UNIX) -- TODO addrlen seen as 0 so not filled in?
+    assert(sv1:close())
+    assert(sv2:close())
+  end,
+  test_sendmmsg = function()
+    if not S.sendmmsg then error "skipped" end
+    local buf = t.buffer(4)
+    ffi.copy(buf, "test", 4)
+    local iov = t.iovecs{{buf, 4}}
+    local sa = t.sockaddr_storage()
+    local sv1, sv2 = assert(S.socketpair("unix", "stream"))
+    local msg = t.mmsghdrs{{iov = iov}}
+    assert(sv1:sendmmsg(msg))
+    local msg = t.mmsghdrs{{name = sa, iov = iov}}
+    assert(sv2:recvmmsg(msg))
+    assert_equal(msg.msg[0].len, #"test")
+    assert_equal(ffi.string(msg.msg[0].hdr.msg_iov[0].base, msg.msg[0].len), "test")
+    --assert_equal(sa.family, c.AF.UNIX) -- TODO addrlen seen as 0 so not filled in?
+    assert(sv1:close())
+    assert(sv2:close())
   end,
 }
 
@@ -1523,20 +1813,22 @@ test_termios = {
     local pts_name = assert(ptm:ptsname())
     local pts = assert(S.open(pts_name, "rdwr, noctty"))
     assert(pts:isatty(), "should be a tty")
-    local ok, err = pts:tcgetsid()
-    assert(not ok, "should not get sid as noctty")
+    if S.tcgetsid then
+      local ok, err = pts:tcgetsid()
+      assert(not ok, "should not get sid as noctty")
+    end
     local termios = assert(pts:tcgetattr())
-    assert(termios.ospeed ~= 115200)
+    assert(termios.ospeed ~= 115200, "speed should not be 115200")
     termios.speed = 115200
     assert_equal(termios.ispeed, 115200)
     assert_equal(termios.ospeed, 115200)
-    assert(bit.band(termios.lflag, c.LFLAG.ICANON) ~= 0)
+    --assert(bit.band(termios.lflag, c.LFLAG.ICANON) ~= 0, "CANON non zero") -- default seems to differ on mips?
     termios:makeraw()
-    assert(bit.band(termios.lflag, c.LFLAG.ICANON) == 0)
+    assert_equal(bit.band(termios.lflag, c.LFLAG.ICANON), 0)
     assert(pts:tcsetattr("now", termios))
-    termios = assert(pts:tcgetattr())
+    termios = assert(pts:tcgetattr()) -- TODO failing on mips
     assert_equal(termios.ospeed, 115200)
-    assert(bit.band(termios.lflag, c.LFLAG.ICANON) == 0)
+    assert_equal(bit.band(termios.lflag, c.LFLAG.ICANON), 0)
     local ok, err = pts:tcsendbreak(0) -- as this is not actually a serial line, NetBSD seems to fail here
     assert(pts:tcdrain())
     assert(pts:tcflush('ioflush'))
@@ -1555,16 +1847,33 @@ test_termios = {
   test_ioctl_winsize = function()
     local ws, err = S.stdout:ioctl("TIOCGWINSZ")
     if not ws and err.NOTTY then error "skipped" end -- stdout might not be a tty in test env
+    assert(ws, err)
     assert(ws.row > 0 and ws.col > 0)
   end,
 }
 
 test_misc = {
---[[ -- should test in fork, oddly causing issues in rump
+  teardown = clean,
   test_chroot_root = function()
-    assert(S.chroot("/"))
+    local cwd = assert(S.open(".", "rdonly"))
+    local cname = assert(S.getcwd())
+    local root = assert(S.open("/", "rdonly"))
+    assert(S.mkdir(tmpfile, "0700"))
+    assert(S.chdir("/"))
+    assert(S.chroot(cname .. "/" .. tmpfile))
+    local ok, err = S.stat("/dev")
+    assert(not ok, "should not find /dev after chroot")
+    -- note that NetBSD will chdir after chroot, so chroot(".") will not work, but does provide fchroot, which Linux does not
+    -- however other BSDs also do this; we could only test with fork so give up
+    if S.fchroot then
+      assert(root:chroot())
+    else
+      if abi.os ~= "linux" then error "skipped" end
+      assert(S.chroot("."))
+    end
+    assert(cwd:chdir())
+    assert(S.rmdir(tmpfile))
   end,
-]]
   test_pathconf = function()
     local pc = assert(S.pathconf(".", "name_max"))
     assert(pc >= 255, "name max should be at least 255")
@@ -1574,6 +1883,15 @@ test_misc = {
     local pc = assert(fd:pathconf("name_max"))
     assert(pc >= 255, "name max should be at least 255")
     assert(fd:close())
+  end,
+  test_sysctl = function()
+    local os = abi.os
+    if S.__rump then os = "netbsd" end
+    local sc = "kern.ostype"
+    if os == "linux" then sc = "kernel.ostype" end
+    local val = assert(S.sysctl(sc))
+    if val:lower() == "darwin" then val = "osx" end
+    assert_equal(val:lower(), os)
   end,
 }
 
@@ -1639,6 +1957,7 @@ test_raw_socket = {
 
     ca.port = 0 -- should not set port
 
+    if abi.os == "openbsd" then error "skipped" end -- TODO fix
     local n = assert(raw:sendto(buf, len, 0, ca))
 
     -- TODO receive issues on netBSD 
@@ -1691,6 +2010,22 @@ test_util = {
     assert(S.unlink(tmpfile))
     assert(S.unlink(tmpfile2))
   end,
+  test_basename_dirname = function()
+    assert_equal(util.dirname  "/usr/lib", "/usr")
+    assert_equal(util.basename "/usr/lib", "lib")
+    assert_equal(util.dirname  "/usr/", "/")
+    assert_equal(util.basename "/usr/", "usr")
+    assert_equal(util.dirname  "usr", ".")
+    assert_equal(util.basename "usr", "usr")
+    assert_equal(util.dirname  "/", "/")
+    assert_equal(util.basename "/", "/")
+    assert_equal(util.dirname  ".", ".")
+    assert_equal(util.basename ".", ".")
+    assert_equal(util.dirname  "..", ".")
+    assert_equal(util.basename "..", "..")
+    assert_equal(util.dirname  "", ".")
+    assert_equal(util.basename "", ".")
+  end,
 }
 
 -- TODO work in progress to make work in BSD, temp commented out
@@ -1711,16 +2046,100 @@ end
 
 test_sleep = {
   test_nanosleep = function()
-    local rem = assert(S.nanosleep(0.001))
-    assert_equal(rem, 0, "expect no elapsed time after nanosleep")
+    assert(S.nanosleep(0.001))
+  end,
+  test_sleep = function()
+    assert(S.sleep(0))
+  end,
+}
+
+test_clock = {
+  test_clock_gettime = function()
+    if not S.clock_gettime then error "skipped" end
+    local tt = assert(S.clock_getres("realtime"))
+    local tt = assert(S.clock_gettime("realtime"))
+    -- TODO add settime
+  end,
+  test_clock_nanosleep = function()
+    if not S.clock_nanosleep then error "skipped" end
+    local rem = assert(S.clock_nanosleep("realtime", nil, 0.001))
+    assert_equal(rem, nil)
+  end,
+  test_clock_nanosleep_abs = function()
+    if not S.clock_nanosleep then error "skipped" end
+    assert(S.clock_nanosleep("realtime", "abstime", 0))
+  end,
+}
+
+test_timeofday = {
+  test_gettimeofday = function()
+    if not S.gettimeofday then error "skipped" end
+    local tv = assert(S.gettimeofday())
+    assert(math.floor(tv.time) == tv.sec, "should be able to get float time from timeval")
+  end,
+  test_settimeofday_fail = function()
+    if not S.settimeofday then error "skipped" end
+    local ok, err = S.settimeofday()
+    -- eg NetBSD does nothing on null, Linux errors
+    assert(ok or (err.PERM or err.INVAL or err.FAULT), "null settimeofday should succeed or fail correctly")
+  end,
+}
+
+-- on rump timers may not deliver signals, but for our tests we will not let them expire, or disable signals
+test_timers = {
+  test_timers = function()
+    if not S.timer_create then error "skipped" end
+    local tid = assert(S.timer_create("monotonic"))
+    local it = tid:gettime()
+    assert_equal(it.value.time, 0)
+    assert(tid:settime(0, {0, 10000}))
+    local it = tid:gettime()
+    assert(it.value.time > 0, "expect some time left")
+    local over = assert(tid:getoverrun())
+    assert_equal(over, 0)
+    assert(tid:delete())
+  end,
+  test_timers_nosig = function()
+    if not S.timer_create then error "skipped" end
+    local tid = assert(S.timer_create("monotonic", {notify = "none"}))
+    local it = tid:gettime()
+    assert_equal(it.value.time, 0)
+    assert(tid:settime(0, {0, 10000}))
+    local it = tid:gettime()
+    assert(it.value.time > 0, "expect some time left")
+    local over = assert(tid:getoverrun())
+    assert_equal(over, 0)
+    assert(tid:delete())
   end,
 }
 
 if not (S.__rump or abi.xen) then -- rump has no processes, memory allocation, process accounting, mmap and proc not applicable
-test_gettimeofday = {
-  test_gettimeofday = function()
-    local tv = assert(S.gettimeofday())
-    assert(math.floor(tv.time) == tv.sec, "should be able to get float time from timeval")
+
+test_signals = {
+  test_signal_return = function()
+    local orig = assert(S.signal("alrm", "ign"))
+    local ret = assert(S.signal("alrm", "dfl"))
+    assert_equal(ret, "IGN")
+    local ret = assert(S.signal("alrm", orig))
+    assert_equal(ret, "DFL")
+  end,
+  test_pause = function()
+    local pid = assert(S.fork())
+    if pid == 0 then -- child
+      S.pause()
+      S.exit(23)
+    else -- parent
+      S.kill(pid, "term")
+      local _, status = assert(S.waitpid(pid))
+      assert(status.WIFSIGNALED, "expect normal exit in clone")
+      assert_equal(status.WTERMSIG, c.SIG.TERM)
+    end
+  end,
+  test_alarm = function()
+    assert(S.signal("alrm", "ign"))
+    assert(S.alarm(10))
+    assert(S.alarm(0)) -- cancel again
+    assert(S.signal("alrm", "dfl"))
   end,
 }
 
@@ -1776,7 +2195,6 @@ test_proc = {
     if not p.cmdline then error "skipped" end -- no files found, /proc not mounted
     assert(p.cmdline and #p.cmdline > 1, "expect cmdline to exist")
     assert(not p.wrongname, "test non existent files")
-    assert(p.exe and #p.exe > 1, "expect an executable")
     assert_equal(p.root, "/", "expect our root to be / usually")
   end,
   test_proc_init = function()
@@ -1789,6 +2207,10 @@ test_proc = {
 
 test_mmap = {
   teardown = clean,
+  test_getpagesize = function()
+    local pagesize = assert(S.getpagesize())
+    assert(pagesize >= 4096, "pagesize at least 4k")
+  end,
   test_mmap_fail = function()
     local size = 4096
     local mem, err = S.mmap(pt.void(1), size, "read", "private, fixed, anon", -1, 0)
@@ -1808,6 +2230,14 @@ test_mmap = {
     assert(S.munmap(mem, size))
     assert(fd:close())
   end,
+  test_mmap_page_offset = function()
+    local fd = assert(S.open(tmpfile, "rdwr,creat", "rwxu"))
+    assert(S.unlink(tmpfile))
+    local pagesize = S.getpagesize()
+    local mem = assert(fd:mmap(nil, pagesize, "read", "shared", pagesize))
+    assert(S.munmap(mem, size))
+    assert(fd:close())
+  end,
   test_msync = function()
     local size = 4096
     local mem = assert(S.mmap(nil, size, "read", "private, anon", -1, 0))
@@ -1823,15 +2253,18 @@ test_mmap = {
   test_mlock = function()
     local size = 4096
     local mem = assert(S.mmap(nil, size, "read", "private, anon", -1, 0))
-    assert(S.mlock(mem, size))
+    local ok, err = S.mlock(mem, size)
+    if not ok and err.PERM then error "skipped" end -- may not be allowed by default
+    assert(ok, err)
     assert(S.munlock(mem, size))
     assert(S.munmap(mem, size))
   end,
   test_mlockall = function()
     if not S.mlockall then error "skipped" end
     local ok, err = S.mlockall("current")
-    if not ok and err.NOSYS then error "skipped" end
-    assert(ok or err.nomem, "expect mlockall to succeed, or fail due to rlimit")
+    if not ok and err.PERM then error "skipped" end -- may not be allowed by default
+    if not ok and err.NOMEM then error "skipped" end -- may fail due to rlimit
+    assert(ok, err)
     assert(S.munlockall())
   end,
 }
@@ -1872,6 +2305,20 @@ test_processes = {
       assert(rpid == pid, "expect fork to return same pid as wait")
       assert(status.WIFEXITED, "process should have exited normally")
       assert(status.EXITSTATUS == 23, "exit should be 23")
+    end
+  end,
+  test_fork_waitid = function()
+    if not S.waitid then error "skipped" end -- NetBSD at least has no waitid
+    local pid0 = S.getpid()
+    local pid = assert(S.fork())
+    if pid == 0 then -- child
+      fork_assert(S.getppid() == pid0, "parent pid should be previous pid")
+      S.exit(23)
+    else -- parent
+      local infop = assert(S.waitid("all", 0, "exited, stopped, continued"))
+      assert_equal(infop.signo, c.SIG.CHLD, "waitid to return SIGCHLD")
+      assert_equal(infop.status, 23, "exit should be 23")
+      assert_equal(infop.code, c.SIGCLD.EXITED, "normal exit expected")
     end
   end,
   test_fork_wait4 = function()
@@ -2001,7 +2448,7 @@ if S.__rump or abi.xen then
 end
 
 -- note at present we check for uid 0, but could check capabilities instead.
-if S.geteuid() == 0 and not S.__rump then
+if S.geteuid() == 0 then
   if S.unshare then
     -- cut out this section if you want to (careful!) debug on real interfaces
     local ok, err = S.unshare("newnet, newns, newuts")
@@ -2030,46 +2477,6 @@ debug.sethook()
 if f ~= 0 then
   os.exit(1)
 end
-
--- TODO iterate through all functions in S and upvalues for active rather than trace
--- also check for non interesting cases, eg fall through to end
--- TODO this is not working any more, FIXME
-
---[[
-if arg[1] == "coverage" then
-  cov.covered = 0
-  cov.count = 0
-  cov.nocov = {}
-  cov.max = 1
-  for k, _ in pairs(cov.active) do
-    cov.count = cov.count + 1
-    if k > cov.max then cov.max = k end
-  end
-  for k, _ in pairs(cov.cov) do
-    cov.active[k] = nil
-    cov.covered = cov.covered + 1
-  end
-  for k, _ in pairs(cov.active) do
-    cov.nocov[k] = true
-  end
-  local gs, ge
-  for i = 1, cov.max do
-    if cov.nocov[i] then
-      if gs then ge = i else gs, ge = i, i end
-    else
-      if gs then
-        if gs == ge then
-          print("no coverage of line " .. gs)
-        else
-          print("no coverage of lines " .. gs .. "-" .. ge)
-        end
-      end
-      gs, ge = nil, nil
-    end
-  end
-  print("\ncoverage is " .. cov.covered .. " of " .. cov.count .. " " .. math.floor(cov.covered / cov.count * 100) .. "%")
-end
-]]
 
 collectgarbage("collect")
 

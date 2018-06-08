@@ -27,11 +27,11 @@ local istype, mktype, getfd = h.istype, h.mktype, h.getfd
 if abi.abi32 then
   -- override open call with largefile -- TODO move this hack to c.lua instead
   function S.open(pathname, flags, mode)
-    flags = bit.bor(c.O[flags], c.O.LARGEFILE)
+    flags = c.O(flags, "LARGEFILE")
     return retfd(C.open(pathname, flags, c.MODE[mode]))
   end
   function S.openat(dirfd, pathname, flags, mode)
-    flags = bit.bor(c.O[flags], c.O.LARGEFILE)
+    flags = c.O(flags, "LARGEFILE")
     return retfd(C.openat(c.AT_FDCWD[dirfd], pathname, flags, c.MODE[mode]))
   end
   -- creat has no largefile flag so cannot be used
@@ -50,36 +50,31 @@ end
 
 -- we could allocate ptid, ctid, tls if required in flags instead. TODO add signal into flag parsing directly
 function S.clone(flags, signal, stack, ptid, tls, ctid)
-  flags = c.CLONE[flags] + c.SIG[signal]
+  flags = c.CLONE[flags] + c.SIG[signal or 0]
   return retnum(C.clone(flags, stack, ptid, tls, ctid))
 end
 
-function S.unshare(flags) return retbool(C.unshare(c.CLONE[flags])) end
-function S.setns(fd, nstype) return retbool(C.setns(getfd(fd), c.CLONE[nstype])) end
-
--- note that this is not strictly the syscall that has some other arguments, but has same functionality
-function S.reboot(cmd) return retbool(C.reboot(c.LINUX_REBOOT_CMD[cmd])) end
-
-function S.wait(status)
-  status = status or t.int1()
-  local ret, err = C.wait(status)
-  if ret == -1 then return nil, t.error(err or errno()) end
-  return ret, nil, t.waitstatus(status[0])
+if C.unshare then -- quite new, also not defined in rump yet
+  function S.unshare(flags) return retbool(C.unshare(c.CLONE[flags])) end
 end
-function S.waitpid(pid, options, status) -- note order of arguments changed as rarely supply status
-  status = status or t.int1()
-  local ret, err = C.waitpid(c.WAIT[pid], status, c.W[options])
-  if ret == -1 then return nil, t.error(err or errno()) end
-  return ret, nil, t.waitstatus(status[0])
+if C.setns then
+  function S.setns(fd, nstype) return retbool(C.setns(getfd(fd), c.CLONE[nstype])) end
 end
-function S.waitid(idtype, id, options, infop) -- note order of args, as usually dont supply infop
+
+function S.reboot(cmd)
+  return retbool(C.reboot(c.LINUX_REBOOT.MAGIC1, c.LINUX_REBOOT.MAGIC2, c.LINUX_REBOOT_CMD[cmd]))
+end
+
+-- note waitid also provides rusage that Posix does not have, override default
+function S.waitid(idtype, id, options, infop, rusage) -- note order of args, as usually dont supply infop, rusage
   if not infop then infop = t.siginfo() end
-  local ret, err = C.waitid(c.P[idtype], id or 0, infop, c.W[options])
+  if not rusage and rusage ~= false then rusage = t.rusage() end
+  local ret, err = C.waitid(c.P[idtype], id or 0, infop, c.W[options], rusage)
   if ret == -1 then return nil, t.error(err or errno()) end
-  return infop
+  return infop, nil, rusage
 end
 
-function S.exit(status) C.exit_group(c.EXIT[status]) end
+function S.exit(status) C.exit_group(c.EXIT[status or 0]) end
 
 function S.sync_file_range(fd, offset, count, flags)
   return retbool(C.sync_file_range(getfd(fd), offset, count, c.SYNC_FILE_RANGE[flags]))
@@ -110,6 +105,9 @@ end
 function S.mremap(old_address, old_size, new_size, flags, new_address)
   return retptr(C.mremap(old_address, old_size, new_size, c.MREMAP[flags], new_address))
 end
+function S.remap_file_pages(addr, size, prot, pgoff, flags)
+  return retbool(C.remap_file_pages(addr, size, c.PROT[prot], pgoff, c.MAP[flags]))
+end
 function S.fadvise(fd, advice, offset, len) -- note argument order TODO change back?
   return retbool(C.fadvise64(getfd(fd), offset or 0, len or 0, c.POSIX_FADV[advice]))
 end
@@ -128,17 +126,12 @@ function S.uname()
           version = ffi.string(u.version), machine = ffi.string(u.machine), domainname = ffi.string(u.domainname)}
 end
 
-function S.sethostname(s) -- only accept Lua string, do not see use case for buffer as well
-  return retbool(C.sethostname(s, #s))
+function S.sethostname(s, len) return retbool(C.sethostname(s, len or #s)) end
+function S.setdomainname(s, len) return retbool(C.setdomainname(s, len or #s)) end
+
+if C.time then
+  function S.time(time) return retnum(C.time(time)) end
 end
-
-function S.setdomainname(s)
-  return retbool(C.setdomainname(s, #s))
-end
-
-function S.settimeofday(tv) return retbool(C.settimeofday(tv, nil)) end
-
-function S.time(time) return retnum(C.time(time)) end
 
 function S.sysinfo(info)
   info = info or t.sysinfo()
@@ -147,94 +140,11 @@ function S.sysinfo(info)
   return info
 end
 
--- this is recommended way to size buffers for xattr
-local function growattrbuf(f, a, b)
-  local len = 512
-  local buffer = t.buffer(len)
-  local ret, err
-  repeat
-    if b then
-      ret, err = f(a, b, buffer, len)
-    else
-      ret, err = f(a, buffer, len)
-    end
-    ret = tonumber(ret)
-    if ret == -1 and (err or errno()) ~= c.E.RANGE then return nil, t.error(err or errno()) end
-    if ret == -1 then
-      len = len * 2
-      buffer = t.buffer(len)
-    end
-  until ret >= 0
-
-  return ffi.string(buffer, ret)
-end
-
-local function lattrbuf(sys, a)
-  local s, err = growattrbuf(sys, a)
-  if not s then return nil, err end
-  local tab = h.split('\0', s)
-  tab[#tab] = nil -- there is a trailing \0 so one extra
-  return tab
-end
-
-function S.listxattr(path) return lattrbuf(C.listxattr, path) end
-function S.llistxattr(path) return lattrbuf(C.llistxattr, path) end
-function S.flistxattr(fd) return lattrbuf(C.flistxattr, getfd(fd)) end
-
-function S.setxattr(path, name, value, flags)
-  return retbool(C.setxattr(path, name, value, #value, c.XATTR[flags]))
-end
-function S.lsetxattr(path, name, value, flags)
-  return retbool(C.lsetxattr(path, name, value, #value, c.XATTR[flags]))
-end
-function S.fsetxattr(fd, name, value, flags)
-  return retbool(C.fsetxattr(getfd(fd), name, value, #value, c.XATTR[flags]))
-end
-
-function S.getxattr(path, name) return growattrbuf(C.getxattr, path, name) end
-function S.lgetxattr(path, name) return growattrbuf(C.lgetxattr, path, name) end
-function S.fgetxattr(fd, name) return growattrbuf(C.fgetxattr, getfd(fd), name) end
-
-function S.removexattr(path, name) return retbool(C.removexattr(path, name)) end
-function S.lremovexattr(path, name) return retbool(C.lremovexattr(path, name)) end
-function S.fremovexattr(fd, name) return retbool(C.fremovexattr(getfd(fd), name)) end
-
--- helper function to set and return attributes in tables
--- TODO this would make more sense as types?
--- TODO listxattr should return an iterator not a table?
-local function xattr(list, get, set, remove, path, t)
-  local l, err = list(path)
-  if not l then return nil, err end
-  if not t then -- no table, so read
-    local r = {}
-    for _, name in ipairs(l) do
-      r[name] = get(path, name) -- ignore errors
-    end
-    return r
-  end
-  -- write
-  for _, name in ipairs(l) do
-    if t[name] then
-      set(path, name, t[name]) -- ignore errors, replace
-      t[name] = nil
-    else
-      remove(path, name)
-    end
-  end
-  for name, value in pairs(t) do
-    set(path, name, value) -- ignore errors, create
-  end
-  return true
-end
-
-function S.xattr(path, t) return xattr(S.listxattr, S.getxattr, S.setxattr, S.removexattr, path, t) end
-function S.lxattr(path, t) return xattr(S.llistxattr, S.lgetxattr, S.lsetxattr, S.lremovexattr, path, t) end
-function S.fxattr(fd, t) return xattr(S.flistxattr, S.fgetxattr, S.fsetxattr, S.fremovexattr, fd, t) end
-
 function S.signalfd(set, flags, fd) -- note different order of args, as fd usually empty. See also signalfd_read()
   set = mktype(t.sigset, set)
   if fd then fd = getfd(fd) else fd = -1 end
-  return retfd(C.signalfd(fd, set, c.SFD[flags]))
+  -- note includes (hidden) size argument
+  return retfd(C.signalfd(fd, set, s.sigset, c.SFD[flags]))
 end
 
 -- note that syscall does return timeout remaining but libc does not, due to standard prototype TODO use syscall
@@ -317,27 +227,13 @@ end
 
 function S.eventfd(initval, flags) return retfd(C.eventfd(initval or 0, c.EFD[flags])) end
 
-function S.getitimer(which, value)
-  value = value or t.itimerval()
-  local ret, err = C.getitimer(c.ITIMER[which], value)
-  if ret == -1 then return nil, t.error(err or errno()) end
-  return value
-end
-
-function S.setitimer(which, it, oldtime)
-  oldtime = oldtime or t.itimerval()
-  local ret, err = C.setitimer(c.ITIMER[which], mktype(t.itimerval, it), oldtime)
-  if ret == -1 then return nil, t.error(err or errno()) end
-  return oldtime
-end
-
 function S.timerfd_create(clockid, flags)
   return retfd(C.timerfd_create(c.CLOCK[clockid], c.TFD[flags]))
 end
 
 function S.timerfd_settime(fd, flags, it, oldtime)
   oldtime = oldtime or t.itimerspec()
-  local ret, err = C.timerfd_settime(getfd(fd), c.TFD_TIMER[flags], mktype(t.itimerspec, it), oldtime)
+  local ret, err = C.timerfd_settime(getfd(fd), c.TFD_TIMER[flags or 0], mktype(t.itimerspec, it), oldtime)
   if ret == -1 then return nil, t.error(err or errno()) end
   return oldtime
 end
@@ -422,7 +318,8 @@ function S.prctl(option, arg2, arg3, arg4, arg5)
   option = c.PR[option]
   local m = prctlmap[option]
   if m then arg2 = m[arg2] end
-  if option == c.PR.MCE_KILL and arg2 == c.PR.MCE_KILL_SET then arg3 = c.PR_MCE_KILL_OPT[arg3]
+  if option == c.PR.MCE_KILL and arg2 == c.PR_MCE_KILL.SET then
+    arg3 = c.PR_MCE_KILL_OPT[arg3]
   elseif prctlpint[option] then
     i = t.int1()
     arg2 = ffi.cast(t.ulong, i)
@@ -468,43 +365,8 @@ function S.adjtimex(a)
   return t.adjtimex(ret, a)
 end
 
-function S.clock_getres(clk_id, ts)
-  ts = mktype(t.timespec, ts)
-  local ret, err = C.clock_getres(c.CLOCK[clk_id], ts)
-  if ret == -1 then return nil, t.error(err or errno()) end
-  return ts
-end
-
-function S.clock_gettime(clk_id, ts)
-  ts = mktype(t.timespec, ts)
-  local ret, err = C.clock_gettime(c.CLOCK[clk_id], ts)
-  if ret == -1 then return nil, t.error(err or errno()) end
-  return ts
-end
-
-function S.clock_settime(clk_id, ts)
-  ts = mktype(t.timespec, ts)
-  return retbool(C.clock_settime(c.CLOCK[clk_id], ts))
-end
-
--- TODO see man page if ABSTIME then remaining time never returned
-function S.clock_nanosleep(clk_id, flags, req, rem)
-  rem = rem or t.timespec()
-  local ret, err = C.clock_nanosleep(c.CLOCK[clk_id], c.TIMER[flags], mktype(t.timespec, req), rem)
-  if ret == -1 then
-    if (err or errno()) == c.E.INTR then return rem else return nil, t.error(err or errno()) end
-  end
-  return 0 -- no time remaining
-end
-
-function S.alarm(s) return C.alarm(s) end
-
-function S.sigaction(signum, handler, oldact)
-  if type(handler) == "string" or type(handler) == "function" then
-    handler = {handler = handler, mask = "", flags = c.SA.RESTART} -- simple case like signal
-  end
-  if handler then handler = mktype(t.sigaction, handler) end
-  return retbool(C.sigaction(c.SIG[signum], handler, oldact))
+if C.alarm then
+  function S.alarm(s) return C.alarm(s) end
 end
 
 function S.setreuid(ruid, euid) return retbool(C.setreuid(ruid, euid)) end
@@ -591,6 +453,95 @@ function S.sched_rr_get_interval(pid, ts)
   local ret, err = C.sched_rr_get_interval(pid or 0, ts)
   if ret == -1 then return nil, t.error(err or errno()) end
   return ts
+end
+
+-- this is recommended way to size buffers for xattr
+local function growattrbuf(f, a, b)
+  local len = 512
+  local buffer = t.buffer(len)
+  local ret, err
+  repeat
+    if b then
+      ret, err = f(a, b, buffer, len)
+    else
+      ret, err = f(a, buffer, len)
+    end
+    ret = tonumber(ret)
+    if ret == -1 and (err or errno()) ~= c.E.RANGE then return nil, t.error(err or errno()) end
+    if ret == -1 then
+      len = len * 2
+      buffer = t.buffer(len)
+    end
+  until ret >= 0
+
+  return ffi.string(buffer, ret)
+end
+
+local function lattrbuf(f, a)
+  local s, err = growattrbuf(f, a)
+  if not s then return nil, err end
+  local tab = h.split('\0', s)
+  tab[#tab] = nil -- there is a trailing \0 so one extra
+  return tab
+end
+
+-- TODO Note these should be in NetBSD too, but no useful filesystem (ex nfs) has xattr support, so never tested
+if C.listxattr then
+  function S.listxattr(path) return lattrbuf(C.listxattr, path) end
+  function S.llistxattr(path) return lattrbuf(C.llistxattr, path) end
+  function S.flistxattr(fd) return lattrbuf(C.flistxattr, getfd(fd)) end
+end
+
+if C.setxattr then
+  function S.setxattr(path, name, value, flags) return retbool(C.setxattr(path, name, value, #value, c.XATTR[flags])) end
+  function S.lsetxattr(path, name, value, flags) return retbool(C.lsetxattr(path, name, value, #value, c.XATTR[flags])) end
+  function S.fsetxattr(fd, name, value, flags) return retbool(C.fsetxattr(getfd(fd), name, value, #value, c.XATTR[flags])) end
+end
+
+if C.getxattr then
+  function S.getxattr(path, name) return growattrbuf(C.getxattr, path, name) end
+  function S.lgetxattr(path, name) return growattrbuf(C.lgetxattr, path, name) end
+  function S.fgetxattr(fd, name) return growattrbuf(C.fgetxattr, getfd(fd), name) end
+end
+
+if C.removexattr then
+  function S.removexattr(path, name) return retbool(C.removexattr(path, name)) end
+  function S.lremovexattr(path, name) return retbool(C.lremovexattr(path, name)) end
+  function S.fremovexattr(fd, name) return retbool(C.fremovexattr(getfd(fd), name)) end
+end
+
+-- helper function to set and return attributes in tables
+-- TODO this would make more sense as types?
+-- TODO listxattr should return an iterator not a table?
+local function xattr(list, get, set, remove, path, t)
+  local l, err = list(path)
+  if not l then return nil, err end
+  if not t then -- no table, so read
+    local r = {}
+    for _, name in ipairs(l) do
+      r[name] = get(path, name) -- ignore errors
+    end
+    return r
+  end
+  -- write
+  for _, name in ipairs(l) do
+    if t[name] then
+      set(path, name, t[name]) -- ignore errors, replace
+      t[name] = nil
+    else
+      remove(path, name)
+    end
+  end
+  for name, value in pairs(t) do
+    set(path, name, value) -- ignore errors, create
+  end
+  return true
+end
+
+if S.listxattr and S.getxattr then
+function S.xattr(path, t) return xattr(S.listxattr, S.getxattr, S.setxattr, S.removexattr, path, t) end
+function S.lxattr(path, t) return xattr(S.llistxattr, S.lgetxattr, S.lsetxattr, S.lremovexattr, path, t) end
+function S.fxattr(fd, t) return xattr(S.flistxattr, S.fgetxattr, S.fsetxattr, S.fremovexattr, fd, t) end
 end
 
 -- POSIX message queues. Note there is no mq_close as it is just close in Linux
@@ -694,6 +645,30 @@ end
 function S.mkfifo(path, mode) return S.mknod(path, bit.bor(c.MODE[mode], c.S_I.FIFO)) end
 function S.mkfifoat(fd, path, mode) return S.mknodat(fd, path, bit.bor(c.MODE[mode], c.S_I.FIFO), 0) end
 
+-- in Linux getpagesize is not a syscall for most architectures.
+-- It is pretty obscure how you get the page size for architectures that have variable page size, I think it is coded into libc
+-- that matches kernel. Which is not much use for us.
+-- fortunately Linux (unlike BSD) checks correct offsets on mapping /dev/zero
+local pagesize -- store so we do not repeat this
+
+if not S.getpagesize then
+  function S.getpagesize()
+    if pagesize then return pagesize end
+    local sz = 4096
+    local fd, err = S.open("/dev/zero", "rdwr")
+    if not fd then return nil, err end
+    while sz < 4096 * 1024 + 1024 do
+      local mm, err = S.mmap(nil, sz, "read", "shared", fd, sz)
+      if mm then
+        S.munmap(mm, sz)
+        pagesize = sz
+        return sz
+      end
+      sz = sz * 2
+    end
+  end
+end
+
 -- in Linux shm_open and shm_unlink are not syscalls
 local shm = "/dev/shm"
 
@@ -713,8 +688,8 @@ end
 
 -- in Linux pathconf can just return constants
 
--- TODO these could go into constants, although maybe better to get from here, and some are slightly bogus eg PAGE_SIZE
-local PAGE_SIZE = 4096
+-- TODO these could go into constants, although maybe better to get from here
+local PAGE_SIZE = S.getpagesize
 local NAME_MAX = 255
 local PATH_MAX = 4096 -- TODO this is in constants, inconsistently
 local PIPE_BUF = 4096
@@ -748,12 +723,34 @@ local pathconf_values = {
   [c.PC["2_SYMLINKS"]] = 1,
 }
 
-function S.pathconf(_, name) return pathconf_values[c.PC[name]] end
-function S.fpathconf(_, name) return pathconf_values[c.PC[name]] end
+function S.pathconf(_, name)
+  local pc = pathconf_values[c.PC[name]]
+  if type(pc) == "function" then pc = pc() end
+  return pc
+end
+S.fpathconf = S.pathconf
 
 -- setegid and set euid are not syscalls
 function S.seteuid(euid) return S.setresuid(-1, euid, -1) end
 function S.setegid(egid) return S.setresgid(-1, egid, -1) end
+
+-- in Linux sysctl is not a sycall any more (well it is but legacy)
+-- note currently all returned as strings, may want to list which should be numbers
+function S.sysctl(name, new)
+  name = "/proc/sys/" .. name:gsub("%.", "/")
+  local flag = c.O.RDONLY
+  if new then flag = c.O.RDWR end
+  local fd, err = S.open(name, flag)
+  if not fd then return nil, err end
+  local len = 1024
+  local old, err = S.read(fd, nil, len)
+  if not old then return nil, err end
+  old = old:sub(1, #old - 1) -- remove trailing newline
+  if not new then return old end
+  local ok, err = S.write(fd, new)
+  if not ok then return nil, err end
+  return old
+end
 
 return S
 

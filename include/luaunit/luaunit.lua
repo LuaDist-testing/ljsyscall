@@ -325,14 +325,15 @@ local UnitResult = { -- class
 		print("=========================================================")
 		self:displayFailedTests()
 		local failurePercent, successCount
-		if self.testCount == 0 then
+		local totalTested = self.testCount - self.skipCount
+		if totalTested == 0 then
 			failurePercent = 0
 		else
-			failurePercent = 100 * (self.failureCount + self.skipCount) / self.testCount
+			failurePercent = 100 * self.failureCount / totalTested
 		end
-		local successCount = self.testCount - self.failureCount - self.skipCount
-		print( string.format("Success : %d%% - %d / %d",
-			100-math.ceil(failurePercent), successCount, self.testCount) )
+		local successCount = totalTested - self.failureCount
+		print( string.format("Success : %d%% - %d / %d (total of %d tests, %d skipped)",
+			100-math.ceil(failurePercent), successCount, totalTested, self.testCount, self.skipCount ) )
 		return self.failureCount
     end
 
@@ -473,13 +474,18 @@ local LuaUnit = {
 		end
 
 		-- run testMethod()
-        	local ok, errorMsg, ret = pcall( aMethod )
+                local tracemsg
+                local function trace(err)
+                  tracemsg = debug.traceback()
+                  return err
+                end
+        	local ok, errorMsg, ret = xpcall( aMethod, trace )
 		if not ok then
 			errorMsg  = self.strip_luaunit_stack(errorMsg)
                         if type(errorMsg) == "string" and errorMsg:sub(-9):lower() == ": skipped" then
 				LuaUnit.result:addSkip()
 			else
-				LuaUnit.result:addFailure( errorMsg ..'\n'..debug.traceback())
+				LuaUnit.result:addFailure( errorMsg ..'\n'.. tracemsg)
 			end
 		end
 
@@ -554,7 +560,7 @@ local LuaUnit = {
 				-- over it.
 				local testClassList = {}
 				for key, val in pairs(_G) do 
-					if "table" == type(val) then
+					if type(key) == "string" and "table" == type(val) then
 						if string.sub(key, 1, 4) == "Test" or string.sub(key, 1, 4) == "test" then
 							table.insert( testClassList, key )
 						end

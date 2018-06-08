@@ -35,6 +35,7 @@ local function fixup_constants(abi, c)
   c.syscall = nil
   c.errornames = nil
   c.OMQATTR = nil
+  c.EALIAS = nil
 
   -- misleading, Musl has higher than Linux
   c.HOST_NAME_MAX = nil
@@ -300,8 +301,11 @@ print [[
 #include <linux/virtio_pci.h>
 #include <linux/pci.h>
 #include <linux/tcp.h>
-//#include <linux/vfio.h>
-//#include <linux/seccomp.h>
+#include <linux/vfio.h>
+#include <linux/seccomp.h>
+
+/* defined in attr/xattr.h */
+#define ENOATTR ENODATA
 
 int ret;
 

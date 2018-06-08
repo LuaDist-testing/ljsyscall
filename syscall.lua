@@ -9,23 +9,21 @@ pcall, type, table, string, math
 
 local abi = require "syscall.abi"
 
-local ffi = require "ffi"
-
 if abi.rump and abi.types then abi.os = abi.types end -- pretend to be NetBSD for normal rump, Linux for rumplinux
 
-require "syscall.ffitypes"
-require("syscall." .. abi.os .. ".ffitypes")
-
-if not abi.rump then
-  require "syscall.ffifunctions"
-  require("syscall." .. abi.os .. ".ffifunctions")
-  if abi.bsd then require "syscall.bsd.ffifunctions" end
+if abi.os == "netbsd" then
+  -- TODO merge
+  require("syscall.netbsd.ffitypes")
+  if not abi.rump then
+    require("syscall.netbsd.ffifunctions")
+  end
+else
+  require("syscall." .. abi.os .. ".ffi")
 end
-
-local ostypes = require("syscall." .. abi.os .. ".types")
 
 local c = require("syscall." .. abi.os .. ".constants")
 
+local ostypes = require("syscall." .. abi.os .. ".types")
 local bsdtypes
 if (abi.rump and abi.types == "netbsd") or (not abi.rump and abi.bsd) then
   bsdtypes = require("syscall.bsd.types")
@@ -33,13 +31,13 @@ end
 local types = require "syscall.types".init(c, ostypes, bsdtypes)
 
 local C
-if abi.rump then
+if abi.rump then -- TODO merge these with conditionals
   C = require("syscall.rump.c")
 else
   C = require("syscall." .. abi.os .. ".c")
 end
 
--- cannot put in S, needed for tests, cannot be put in c earlier due to deps  TODO remove see #94
+-- cannot put in S, needed for tests, cannot be put in c earlier due to deps TODO remove see #94
 c.IOCTL = require("syscall." .. abi.os .. ".ioctl").init(types)
 
 local S = require "syscall.syscalls".init(C, c, types)
@@ -65,5 +63,4 @@ if abi.os == "linux" then
 end
 
 return S
-
 

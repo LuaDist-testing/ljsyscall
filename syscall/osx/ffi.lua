@@ -9,6 +9,15 @@ pcall, type, table, string
 
 local abi = require "syscall.abi"
 
+local ffi = require "ffi"
+
+require "syscall.ffitypes"
+
+-- for version detection - not implemented yet
+ffi.cdef [[
+int sysctl(const int *name, unsigned int namelen, void *oldp, size_t *oldlenp, const void *newp, size_t newlen);
+]]
+
 local defs = {}
 
 local function append(str) defs[#defs + 1] = str end
@@ -30,10 +39,15 @@ typedef uint32_t id_t; // check as not true in freebsd
 typedef unsigned long tcflag_t;
 typedef unsigned long speed_t;
 
+/* osx does not have the clock_ functions so clockid undefined, but so headers work, define it
+   similarly with timer_t */
+typedef uint32_t clockid_t;
+typedef int timer_t;
+
 /* actually not a struct at all in osx, just a uint32_t but for compatibility fudge it */
 /* TODO this should work, otherwise need to move all sigset_t handling out of common types */
 typedef struct {
-  uint32_t      val[1];
+  uint32_t      sig[1];
 } sigset_t;
 
 typedef struct fd_set {
@@ -68,6 +82,15 @@ struct timeval {
   time_t tv_sec;
   suseconds_t tv_usec;
 };
+struct itimerspec {
+  struct timespec it_interval;
+  struct timespec it_value;
+};
+struct itimerval {
+  struct timeval it_interval;
+  struct timeval it_value;
+};
+
 struct sockaddr {
   uint8_t       sa_len;
   sa_family_t   sa_family;
@@ -136,13 +159,21 @@ typedef struct __siginfo {
   long    si_band;
   unsigned long   __pad[7];
 } siginfo_t;
+union __sigaction_u {
+  void    (*__sa_handler)(int);
+  void    (*__sa_sigaction)(int, struct __siginfo *, void *);
+};
 struct sigaction {
-  union {
-    void (*sa_handler)(int);
-    void (*sa_sigaction)(int, siginfo_t *, void *);
-  } sa_handler; // renamed as in Linux definition
+  union __sigaction_u __sigaction_u;
   sigset_t sa_mask;
   int sa_flags;
+};
+struct sigevent {
+  int             sigev_notify;
+  int             sigev_signo;
+  union sigval    sigev_value;
+  void            (*sigev_notify_function)(union sigval);
+  void            *sigev_notify_attributes; /* pthread_attr_t */
 };
 struct dirent {
   uint64_t  d_ino;
@@ -201,11 +232,32 @@ struct kevent {
   intptr_t        data;
   void            *udata;
 };
-
+struct aiocb {
+  int             aio_fildes;
+  off_t           aio_offset;
+  volatile void   *aio_buf;
+  size_t          aio_nbytes;
+  int             aio_reqprio;
+  struct sigevent aio_sigevent;
+  int             aio_lio_opcode;
+};
 ]]
 
-local ffi = require "ffi"
+append [[
+int ioctl(int d, unsigned long request, void *arg);
+int mount(const char *type, const char *dir, int flags, void *data);
+
+int stat64(const char *path, struct stat *sb);
+int lstat64(const char *path, struct stat *sb);
+int fstat64(int fd, struct stat *sb);
+
+int _getdirentries(int fd, char *buf, int nbytes, long *basep);
+int _sigaction(int signum, const struct sigaction *act, struct sigaction *oldact);
+]]
 
 ffi.cdef(table.concat(defs, ""))
+
+require "syscall.ffifunctions"
+require "syscall.bsd.ffi"
 
 

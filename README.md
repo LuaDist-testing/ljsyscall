@@ -6,7 +6,7 @@ What? An FFI implementation of the Linux, NetBSD, FreeBSD and OSX kernel ABIs fo
 
 Why? First it provides a comprehensive set of system call APIs for programming sockets, files and so on, including the more obscure things (eg file change notifications). Second it provides higher level interfaces such as network interface configuration, so your application can control its entire runtime interface including IP addresses routing and so on. Third it provides tools for added security, such as support for Linux namespaces (containers), system call filtering (seccomp type 2), capabilities and so on, all with a script language interface that is much simpler to use than the C interface. As it is Lua based it can easily be embedded in another language; in the future ports to other scripting languages are planned. It also serves as a way of learning how the operating system interfaces work in a more forgiving environment than C.
 
-Thhere is support for the [NetBSD rump kernel](http://www.netbsd.org/docs/rump/) under other operating systems and [natively without an operating system under Xen](https://github.com/justincormack/rumpuser-xen).
+There is support for the [NetBSD rump kernel](http://www.netbsd.org/docs/rump/) under other operating systems and [natively without an operating system under Xen](https://github.com/justincormack/rumpuser-xen).
 
 This code is beta. Interfaces will change in future. The code is riddled with TODOs. On the other hand it does work, and the changes at this stage will be smaller than in the past.
 
@@ -16,9 +16,13 @@ The [video of my FOSDEM 2013 talk](http://www.myriabit.com/ljsyscall/) here, and
 
 ## Install
 
+The stable release is now available in the luarocks repository, so you should be able to run ```luarocks install ljsyscall```. There will be a ```ljsyscall-rump``` rock soon, but I need to fix the install for the rump libraries.
+
 For simple uses, you just need to put the ```.lua``` files somewhere that LuaJIT will find them, eg typically in ```/usr/local/share/lua/5.1/```. Keep the directory structure there is. You can safely remove files from architectures and operating systems you do not use.
 
-You can install using luarocks; this is not in the repo but you can install with ```luarocks install rockspec/ljsyscall-scm-1.rockspec``` for the HEAD version, or one of the specific version files in that directory.
+You can also install the head version using luarocks: ```luarocks install rockspec/ljsyscall-scm-1.rockspec``` .
+
+It is also available as a package in [buildroot](http://buildroot.uclibc.org/), a build system for embedded systems.
 
 If you are using Lua rather than LuaJIT you need to install [luaffi](https://github.com/jmckaskill/luaffi) first; this is largely working now, but there will be more support for standard Lua coming soon.
 
@@ -28,43 +32,26 @@ There is more information in the INSTALL file.
 
 Requirements: Needs [LuaJIT 2.0.2](http://www.luajit.org/) or later.
 
-The code does not currently portably support the main Lua implementation, only LuaJIT. It now runs again with [luaffi](https://github.com/jmckaskill/luaffi) under standard Lua 5.2 (and probably 5.1, untested). Because the function calls in luaffi use dynasm they are not fully portable, so I will be adding support for Lua C interface function calls as well shortly. This is not yet integrated into the test suite.
+The code does not currently portably support the main Lua implementation, only LuaJIT. It now runs again with [luaffi](https://github.com/jmckaskill/luaffi) under standard Lua 5.2 (and probably 5.1, untested). Because the function calls in luaffi use dynasm they are not fully portable, so I will be adding support for Lua C interface function calls as well shortly. This is not yet integrated into the test suite so there may be regressions and issues still.
 
-On Linux ARM (soft or hard float), x86, AMD64 and PPC architectures are supported; MIPS support will be completed soon. Either glibc/eglibc, [Musl libc](http://www.musl-libc.org/) or uClibc should work on Linux. Note that uClibc has had little testing. For full testing (as root) a recent kernel is recommended, eg Linux 3.5 or Ubuntu 12.04 is fine, as we use many recent features such as network namespaces to test thoroughly; tests should be skipped if unsupported, raise an issue if not.
+On Linux ARM (soft or hard float), x86, AMD64, and PPC32 and MIPS32 (o32 ABI) architectures are supported; this is the complete set of architectures that LuaJIT supports. For full testing (as root) a recent kernel is recommended, eg Linux 3.5 or Ubuntu 12.04 is fine, as we use many recent features such as network namespaces to test thoroughly; tests should be skipped if unsupported, raise an issue if not. Other architectures will require a LuaJIT port or the in-progress pure Lua port.
 
 Android (ARM tested so far) currently passes all the non root tests now; some tests are be skipped as the kernel does not ship with some functionality (aio, mq). Generally much functionality is available even though it is not in Bionic libc.
 
-For the NetBSD support all platforms should work in principle; more test targets will be added soon, currently tests being run on x86 and amd64, an ARM test target will be added.
+For the NetBSD support all platforms should work in principle; more test targets will be added soon, currently tests being run on x86 and amd64, an ARM test target will be added. The port currently targets NetBSD 6, although some NetBSD current (7) differences are there too.
 
-FreeBSD support is currently only for FreeBSD 10, and only tested on AMD64. FreeBSD 9 support should be fairly easy to add, but there are some type changes eg ino_t. Other architectures should work, but are currently untested.
+FreeBSD support is currently for FreeBSD 9 and 10, and only tested on amd64. Other architectures should work, but are currently untested.
 
-OSX support is currently tested only on amd64, and on a recent release (currently testing on Mountain Lion). It should work on other recent releases, and should work on ARM, ie iOS.
+OpenBSD support is tested under 5.4 and 5.5, on amd64. Other architectures should work, but are currently untested. Versions before 5.4 should be easy to add support for, as the ABI does not have significant differences.
 
-There will not be Windows support (although in principle Cygwin and similar platforms could be supported). If you want to do similar things on Windows you should try [TINN](https://github.com/Wiladams/TINN).
+OSX support is currently tested only on amd64, and on a recent release (currently testing on Mountain Lion). It should work on other recent releases, and should work on ARM, ie iOS, although some tweaks might be necessary. As I do not have a suitable test machine for OSX support, testing is intermittent and there may be regressions.
 
-For the (optional) rump kernel functionality, the easiest way at present to install it is usually using the [buildrump.sh](https://github.com/anttikantee/buildrump.sh) project, which is now included as a git submodule. The rump kernel is a way of [running parts of the NetBSD kernel in userspace as libraries](http://www.netbsd.org/docs/rump/). At the moment support is partially implemented, planning to add more soon, in particular to be able to script the backend "hypervisor" part. There are some additional examples in `examples/rump` which is a port of the tests in buildrump. The rump kernel runs on many elf/Posix OS and architectures, currently tested on Linux x86, x64, ppc, arm and NetBSD x86, x64, FreeBSD 10 (with gcc). It does not currently run on OSX or Windows.
+There is currently no Windows support, although in principle Cygwin or Windows Services for Unix could be supported. If you want to do similar things using the Windows native APIs you should try [TINN](https://github.com/Wiladams/TINN).
+
+For the (optional) rump kernel functionality, the easiest way at present to install it is usually using the [buildrump.sh](https://github.com/rumpkernel/buildrump.sh) project, which is now included as a git submodule. The rump kernel is a way of [running parts of the NetBSD kernel in userspace as libraries](http://rumpkernel.org). At the moment support is partially implemented, planning to add more soon, in particular to be able to script the backend "hypervisor" part. There are some additional examples in `examples/rump` which is a port of the tests in buildrump. The rump kernel runs on many elf/Posix OS and architectures, currently tested on Linux x86, x64, ppc, arm and NetBSD x86, x64, FreeBSD 10 (with gcc). It does not currently run on OSX or Windows.
 
 ## New features planned soon
-netfilter, dhcp, selinux, arp, better sockopt handling, cgroups support, more NetBSD, FreeBSD (inc FreeBSD 9), and OSX support, rump kernel hypercall API, OSv support, Lua support, more introspection. Plus whatever users request.
-
-## Release notes
-0.9 bug fixes, better tests, reworking of how methods are called, more NetBSD support, termios interface rework, improved ioctl that understands type and direction of arguments, more NetBSD network config, rump kernel Linux ABI support, cleanups, full ppc support, endian fixes, Android fixes, Xen support, kqueue, poll and epoll interface improvements, additional syscalls, luaffi support again, better kernel headers and fixes against them, more MIPS support, improved APIs with multiple return values, initial NetBSD ktrace support, FreeBSD support, more OSX support, sharing of BSD code.
-
-0.8 rump kernel fixes, NetBSD 64 bit fixes, initial arp/neighbour support, towards MIPS support, cmsg cleanup, shm_open, iterators for directory iteration and ls, more OSX and NetBSD support, initial cgroups support, initial support of NetBSD network config.
-
-0.7 bug fixes, general cleanups, filesystem capabilities, xattr bug fixes, signal handler functions, cpu affinity support, scheduler functions, POSIX message queues, tun/tap support, ioctl additions and improvements, initial NetBSD and OSX support, initial NetBSD rump kernel support, some fixes to allow Android to work.
-
-0.6 adds support for raw sockets, BPF, seccomp mode 2 (syscall filtering), capabilities, feature tests, plus bug fixes.
-
-0.5 adds support for ppc, has some bug fixes for 64 bit file handling on 32 bit architectures, and better organisation of files.
-
-0.4 is a release that works well with LuaJIT 2.0.0 and has had extensive testing. The code is somewhat modular now, which makes it easier to use and understand.
-
-0.3 was the last release to work with luaffi. There are significant bugs.
-
-0.2 work in progress release.
-
-0.1 very early prototype.
+netfilter, dhcp, selinux, arp, better sockopt handling, cgroups support, more NetBSD, FreeBSD and OSX support, rump kernel hypercall API, OSv support, Lua support, more introspection. Plus whatever users request.
 
 ## Examples and documentation
 
@@ -76,25 +63,26 @@ There will be proper documentation before the 1.0 release, apologies for it not 
 
 This project is being used ina variety of places, such as for testing the Linux compatibility code in NetBSD, among other things. If your project is not listed here please let me know or send a pull request.
 
-. [ljlinenoise](https://github.com/fperrad/ljlinenoise) a Lua implementation of the linenoise (readline) library.
+* [ljlinenoise](https://github.com/fperrad/ljlinenoise) a Lua implementation of the linenoise (readline) library.
+* [nodish](https://github.com/lipp/nodish) a lightweight Lua equivalent to Node.js.
+* [lua-mmapfile](https://github.com/geoffleyland/lua-mmapfile) a simple Lua interface to mmap.
+* [buildroot](http://buildroot.uclibc.org/) has an ljsyscall package.
 
 ## Testing
 
-The test script is fairly comprehensive. Tested on ARM, amd64, x86, with various combinations of libc. I run long test runs as LuaJIT makes random choices in code generation so single runs do not necessarily show errors. Also tested with Valgrind to pick up memory errors, although there are some issues with some of the system calls, which are being gradually resolved (I use Valgrind SVN).
+The test script is fairly comprehensive. Tested on ARM, amd64, x86, PowerPC. I run long test runs as LuaJIT makes random choices in code generation so single runs do not necessarily show errors. Also tested with Valgrind to pick up memory errors, although there are some issues with some of the system calls, which are being gradually resolved (I use Valgrind SVN).
 
 Some tests need to be run as root, and will not be run otherwise. You cannot test a lot of system calls otherwise. Under Linux the testing is now done in isolated containers so should not affect the host system, although on old kernels reboot in a container could reboot the host.
 
-Some tests may fail if you do not have kernel support for some feature (eg namespacing, ipv6, bridges). Starting to add feature testing to work around this, but the way this works needs improving.
-
 The test script is a copy of [luaunit](https://github.com/rjpcomputing/luaunit). I have made some modifications to allow tests to be skipped, which are not really general enough to push upstream, although I would like a nicer solution.
 
-I have added initial coverage tests (now need fixing), and a C test to check constants and structures. The C test is useful for picking up errors but needs a comprehensive set of headers which eg is not available on most ARM machines so it can be difficult to run. I am putting together a set of hardware to run comprehensive tests on to make this less of an issue.
+I have added initial coverage tests (now needs fixing), and a C test to check constants and structures. The C test is useful for picking up errors but needs a comprehensive set of headers which eg is not available on most ARM machines so it can be difficult to run. I am putting together a set of hardware to run comprehensive tests on to make this less of an issue.
 
 There is now [Travis CI](https://travis-ci.org/) support, although this will only test on one architecture (x64, glibc) at present. You can [see the test results here](https://travis-ci.org/justincormack/ljsyscall). If you fork the code you should be able to run these tests by setting up your own Travis account, and they will also be run for pull requests.
 
 I have used the LuaJIT [reflect library](http://www.corsix.org/lua/reflect/api.html) for checking struct offsets.
 
-Adding buildbot tests for a wider variety of architectures, as Travis is limited to Linux/Ubuntu. Currently building on Linux ARM, PowerPC, x64 and x86, NetBSD x86 and x64, FreeBSD x64; more targets to come soon. The [buildbot dashboard is now up](http://build.myriabit.eu:8010/).
+There are buildbot tests for a wider variety of architectures, as Travis is limited to Linux/Ubuntu. Currently building on Linux ARM, PowerPC, x64 and x86, NetBSD x86 and x64, FreeBSD x64, OpenBSD x64; more targets to come soon. The [buildbot dashboard is now up](http://build.myriabit.eu:8010/).
 
 ## What is implemented?
 
@@ -110,11 +98,9 @@ The aim is to provide nice to use, Lua friendly interfaces where possible, but m
 
 ## Note on libc
 
-Under Linux, lots of system calls have glibc wrappers, some of these are trivial some less so, and some are broken. In particular some of them expose different ABIs, so we try to avoid these, just using kernel ABIs as these have long term support and we are not trying to be compatible as we are using a different language. `strace` is your friend, although strace is buggy in the nasty edge cases (at some point ljsyscall will implement ptrace so it can debug itself; it implements `ktrace` in NetBSD). Therefore under Linux the project is gradually moving to calling system calls directly, bypassing the libc, just keeping directly to the kernel ABI.
+Under Linux, there are several alternative C libraries as well as the standard Glibc, such as [Musl libc](http://www.musl-libc.org/), uClibc, Dietlibc and Bionic, which is the C library used on Android. These are not ABI compatible, so in order to allow use of any of them, we just call system calls directly on Linux, bypassing libc completely.
 
-As well as eglibc and glibc, everything now runs on [Musl libc](http://www.etalabs.net/musl/). I use [sabotage](https://github.com/rofl0r/sabotage) as a build environment, which now includes luajit, although you may need to update to git head. Musl is much smaller than libc (700k vs 3M), while still implementing everything we need in easy to understand code. It is also MIT licensed, which may be useful as it matches the other licenses for LuaJIT and ljsyscall. Occasionally I find small bugs and missing features which I feed back to the developers. The Android libc, bionic, is also supported now, mainly by bypassing it and calling the system calls directly.
-
-Under NetBSD it is much simpler, the only thing we need to be careful of is versioned system calls in libc, where we directly call a specific version as the plain name will always refer to the old version for compatibility. FreeBSD does a more transparent versioning, so the syscall names stay the same.
+Under NetBSD it is much simpler, the only thing we need to be careful of is versioned system calls in libc, where we directly call a specific version as the plain name will always refer to the old version for compatibility. FreeBSD and OpenBSD do a more transparent versioning, so the syscall names stay the same.
 
 ### API
 
@@ -140,7 +126,7 @@ The test cases are good examples until there is better documentation!
 
 A very few functions have arguments in a different order to make optional ones easier. This is a bit confusing sometimes, so check the examples or source code.
 
-It would be nice to be API compatible with other projects, especially Luaposix, luasocket, nixio. Unfortunately none of these seem to have good test suites, and there interfaces are problematic for some functions, so this has been put on hold, although basic luasocket support is planned fairly soon.
+There is now an expreimental luafilesystem interface available, use `lfs = require "syscall.lfs"`. It would be nice to be API compatible with other projects, especially Luaposix, luasocket, nixio. Unfortunately none of these seem to have good test suites, and there interfaces are problematic for some functions, so this has been put on hold, although basic luasocket support is planned fairly soon.
 
 ### Performance
 
@@ -152,9 +138,9 @@ There is an example epoll script that you can test with Apachebench in the examp
 
 If you wish to port to an unsupported platform, please get in touch for help. All contributions welcomed.
 
-Porting to different Linux processor architectures is a matter of filling in the constants and types that differ. The `ctest` tests will flag issues with these, although many platforms are also missing headers which makes it more complex. If you can provide qemu target information that would be helpful as the platform can be added to the test suite, or easily available hardware.
+Porting to different Linux processor architectures is a matter of filling in the constants and types that differ. The `ctest` tests will flag issues with these, although many platforms are also missing headers which makes it more complex. If you can provide qemu target information that would be helpful as the platform can be added to the test suite, or easily available hardware. We currently support all the platforms that LuaJIT does, so new platforms will require Lua support or new LuJIT ports.
 
-Porting to different OSs is a fair amount of work, but can generally be done gradually. The other BSDs are very similar to NetBSD, FreeBSD and OSX. Solaris has an ABI defined by libc not the kernel ABI, which would mean that you should probably target that. The first thing to do is check the base shared types, and work out if there are issues with large file support if it is a 32 bit platform. There is a fair amount of shared code that should just work once the types and constants are defined.
+Porting to different OSs is a fair amount of work, but can generally be done gradually. There is a lot of code sharing with the BSD operating systems so porting to new ones is just a matter of finding the differences; DragonflyBSD is the main one left to support. Solaris support would be nice to have, but it differs more than the BSDs. The first thing to do is check the base shared types, and work out if there are issues with large file support if it is a 32 bit platform. There is a fair amount of shared code that should just work once the types and constants are defined.
 
 If you want to port this to a different language, then get in touch, as I have some ideas and plans along this route, though I am trying to get a good fairly stable interface in Lua first. Pypy and Ruby ought to be suitable targets as they have an ffi; I also intend to do a classic Lua port using the C API. I intend to use reflection to generate more generic data for the ports, and rework how files are included. The first thing to do is just prototype some basic functions to see what is needed. Get in touch if you are interested in a port!
 

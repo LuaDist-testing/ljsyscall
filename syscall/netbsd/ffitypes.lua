@@ -9,6 +9,14 @@ pcall, type, table, string
 
 local abi = require "syscall.abi"
 
+local ffi = require "ffi"
+
+require "syscall.ffitypes"
+
+local helpers = require "syscall.helpers"
+
+local version = require "syscall.netbsd.version".version
+
 local defs = {}
 
 local function append(str) defs[#defs + 1] = str end
@@ -64,6 +72,12 @@ typedef unsigned int _netbsd_nfds_t;
 typedef uint32_t _netbsd_id_t;
 typedef unsigned int _netbsd_tcflag_t;
 typedef unsigned int _netbsd_speed_t;
+typedef int32_t _netbsd_lwpid_t;
+typedef uint32_t _netbsd_fixpt_t;
+
+typedef unsigned short u_short;
+typedef unsigned char u_char;
+typedef uint64_t u_quad_t;
 
 /* these are not used in Linux so not renamed */
 typedef unsigned int useconds_t;
@@ -90,6 +104,10 @@ struct _netbsd_msghdr {
   socklen_t msg_controllen;
   int msg_flags;
 };
+struct _netbsd_mmsghdr {
+  struct _netbsd_msghdr msg_hdr;
+  unsigned int msg_len;
+};
 struct _netbsd_timespec {
   _netbsd_time_t tv_sec;
   long   tv_nsec;
@@ -98,8 +116,16 @@ struct _netbsd_timeval {
   _netbsd_time_t tv_sec;
   _netbsd_suseconds_t tv_usec;
 };
+struct _netbsd_itimerspec {
+  struct _netbsd_timespec it_interval;
+  struct _netbsd_timespec it_value;
+};
+struct _netbsd_itimerval {
+  struct _netbsd_timeval it_interval;
+  struct _netbsd_timeval it_value;
+};
 typedef struct {
-  uint32_t      val[4]; // note renamed to match Linux
+  uint32_t      sig[4]; // note renamed to match Linux
 } _netbsd_sigset_t;
 struct _netbsd_sockaddr {
   uint8_t       sa_len;
@@ -156,6 +182,13 @@ typedef union _netbsd_sigval {
   int     sival_int;
   void    *sival_ptr;
 } _netbsd_sigval_t;
+struct  _netbsd_sigevent {
+  int     sigev_notify;
+  int     sigev_signo;
+  union _netbsd_sigval    sigev_value;
+  void    (*sigev_notify_function)(union _netbsd_sigval);
+  void /* pthread_attr_t */       *sigev_notify_attributes;
+};
 struct _netbsd_kevent {
   uintptr_t ident;
   uint32_t  filter;
@@ -582,15 +615,87 @@ struct _netbsd_in6_aliasreq {
   int     ifra_flags;
   struct  _netbsd_in6_addrlifetime ifra_lifetime;
 };
+struct _netbsd_rt_metrics {
+  uint64_t rmx_locks;
+  uint64_t rmx_mtu;
+  uint64_t rmx_hopcount;
+  uint64_t rmx_recvpipe;
+  uint64_t rmx_sendpipe;
+  uint64_t rmx_ssthresh;
+  uint64_t rmx_rtt;
+  uint64_t rmx_rttvar;
+  _netbsd_time_t  rmx_expire;
+  _netbsd_time_t  rmx_pksent;
+};
+struct _netbsd_rt_msghdr {
+  u_short rtm_msglen __attribute__ ((aligned (8)));
+  u_char  rtm_version;
+  u_char  rtm_type;
+  u_short rtm_index;
+  int     rtm_flags;
+  int     rtm_addrs;
+  pid_t   rtm_pid;
+  int     rtm_seq;
+  int     rtm_errno;
+  int     rtm_use;
+  int     rtm_inits;
+  struct  _netbsd_rt_metrics rtm_rmx __attribute__ ((aligned (8)));
+};
+struct _netbsd_clockinfo {
+  int     hz;
+  int     tick;
+  int     tickadj;
+  int     stathz;
+  int     profhz;
+};
+struct _netbsd_loadavg {
+  _netbsd_fixpt_t ldavg[3];
+  long    fscale;
+};
+struct _netbsd_vmtotal
+{
+  int16_t t_rq;
+  int16_t t_dw;
+  int16_t t_pw;
+  int16_t t_sl;
+  int16_t _reserved1;
+  int32_t t_vm;
+  int32_t t_avm;
+  int32_t t_rm;
+  int32_t t_arm;
+  int32_t t_vmshr;
+  int32_t t_avmshr;
+  int32_t t_rmshr;
+  int32_t t_armshr;
+  int32_t t_free;
+};
+struct _netbsd_ctlname {
+  const char *ctl_name;
+  int     ctl_type;
+};
+/* volatile may be an issue... */
+struct _netbsd_aiocb {
+  off_t aio_offset;
+  volatile void *aio_buf;
+  size_t aio_nbytes;
+  int aio_fildes;
+  int aio_lio_opcode;
+  int aio_reqprio;
+  struct _netbsd_sigevent aio_sigevent;
+  /* Internal kernel variables */
+  int _state;
+  int _errno;
+  ssize_t _retval;
+};
 ]]
 
 local s = table.concat(defs, "")
 
 -- TODO broken, makes this module not a proper function, see #120
+-- although this will not ever actually happen...
 if abi.host == "netbsd" then
   s = string.gsub(s, "_netbsd_", "") -- remove netbsd types
 end
 
-local ffi = require "ffi"
 ffi.cdef(s)
 

@@ -114,7 +114,6 @@ local addstructs = {
   ff_periodic_effect = "struct ff_periodic_effect",
   ff_rumble_effect = "struct ff_rumble_effect",
   ff_effect = "struct ff_effect",
-  termio = "struct termio",
   sock_fprog = "struct sock_fprog",
   user_cap_header = "struct user_cap_header",
   user_cap_data = "struct user_cap_data",
@@ -155,6 +154,7 @@ t.iocb_ptrs = function(n, ...) return ffi.new(iocb_ptrs, n, ...) end
 
 -- Note 32 bit dev_t; glibc has 64 bit dev_t but we use syscall API which does not
 local function makedev(major, minor)
+  if type(major) == "table" then major, minor = major[1], major[2] end
   local dev = major or 0
   if minor then dev = bit.bor(bit.lshift(bit.band(minor, 0xffffff00), 12), bit.band(minor, 0xff), bit.lshift(major, 8)) end
   return dev
@@ -181,6 +181,120 @@ mt.device = {
 }
 
 addtype(types, "device", "struct {dev_t dev;}", mt.device)
+
+mt.sockaddr = {
+  index = {
+    family = function(sa) return sa.sa_family end,
+  },
+}
+
+addtype(types, "sockaddr", "struct sockaddr", mt.sockaddr)
+
+-- cast socket address to actual type based on family, defined later
+local samap_pt = {}
+
+mt.sockaddr_storage = {
+  index = {
+    family = function(sa) return sa.ss_family end,
+  },
+  newindex = {
+    family = function(sa, v) sa.ss_family = c.AF[v] end,
+  },
+  __index = function(sa, k)
+    if mt.sockaddr_storage.index[k] then return mt.sockaddr_storage.index[k](sa) end
+    local st = samap_pt[sa.ss_family]
+    if st then
+      local cs = st(sa)
+      return cs[k]
+    end
+    error("invalid index " .. k)
+  end,
+  __newindex = function(sa, k, v)
+    if mt.sockaddr_storage.newindex[k] then
+      mt.sockaddr_storage.newindex[k](sa, v)
+      return
+    end
+    local st = samap_pt[sa.ss_family]
+    if st then
+      local cs = st(sa)
+      cs[k] = v
+      return
+    end
+    error("invalid index " .. k)
+  end,
+  __new = function(tp, init)
+    local ss = ffi.new(tp)
+    local family
+    if init and init.family then family = c.AF[init.family] end
+    local st
+    if family then
+      st = samap_pt[family]
+      ss.ss_family = family
+      init.family = nil
+    end
+    if st then
+      local cs = st(ss)
+      for k, v in pairs(init) do
+        cs[k] = v
+      end
+    end
+    return ss
+  end,
+  -- netbsd likes to see the correct size when it gets a sockaddr; Linux was ok with a longer one
+  __len = function(sa)
+    if samap_pt[sa.family] then
+      local cs = samap_pt[sa.family](sa)
+      return #cs
+    else
+      return s.sockaddr_storage
+    end
+  end,
+}
+
+-- experiment, see if we can use this as generic type, to avoid allocations.
+addtype(types, "sockaddr_storage", "struct sockaddr_storage", mt.sockaddr_storage)
+
+mt.sockaddr_in = {
+  index = {
+    family = function(sa) return sa.sin_family end,
+    port = function(sa) return ntohs(sa.sin_port) end,
+    addr = function(sa) return sa.sin_addr end,
+  },
+  newindex = {
+    family = function(sa, v) sa.sin_family = v end,
+    port = function(sa, v) sa.sin_port = htons(v) end,
+    addr = function(sa, v) sa.sin_addr = mktype(t.in_addr, v) end,
+  },
+  __new = function(tp, port, addr)
+    if type(port) == "table" then return newfn(tp, port) end
+    return newfn(tp, {family = c.AF.INET, port = port, addr = addr})
+  end,
+  __len = function(tp) return s.sockaddr_in end,
+}
+
+addtype(types, "sockaddr_in", "struct sockaddr_in", mt.sockaddr_in)
+
+mt.sockaddr_in6 = {
+  index = {
+    family = function(sa) return sa.sin6_family end,
+    port = function(sa) return ntohs(sa.sin6_port) end,
+    addr = function(sa) return sa.sin6_addr end,
+  },
+  newindex = {
+    family = function(sa, v) sa.sin6_family = v end,
+    port = function(sa, v) sa.sin6_port = htons(v) end,
+    addr = function(sa, v) sa.sin6_addr = mktype(t.in6_addr, v) end,
+    flowinfo = function(sa, v) sa.sin6_flowinfo = v end,
+    scope_id = function(sa, v) sa.sin6_scope_id = v end,
+  },
+  __new = function(tp, port, addr, flowinfo, scope_id) -- reordered initialisers.
+    if type(port) == "table" then return newfn(tp, port) end
+    return newfn(tp, {family = c.AF.INET6, port = port, addr = addr, flowinfo = flowinfo, scope_id = scope_id})
+  end,
+  __len = function(tp) return s.sockaddr_in6 end,
+}
+
+addtype(types, "sockaddr_in6", "struct sockaddr_in6", mt.sockaddr_in6)
 
 -- we do provide this directly for compatibility, only use for standard names
 mt.sockaddr_un = {
@@ -322,8 +436,31 @@ mt.stat = {
   },
 }
 
+-- add some friendlier names to stat, also for luafilesystem compatibility
+mt.stat.index.access = mt.stat.index.atime
+mt.stat.index.modification = mt.stat.index.mtime
+mt.stat.index.change = mt.stat.index.ctime
+
+local namemap = {
+  file             = mt.stat.index.isreg,
+  directory        = mt.stat.index.isdir,
+  link             = mt.stat.index.islnk,
+  socket           = mt.stat.index.issock,
+  ["char device"]  = mt.stat.index.ischr,
+  ["block device"] = mt.stat.index.isblk,
+  ["named pipe"]   = mt.stat.index.isfifo,
+}
+
+mt.stat.index.typename = function(st)
+  for k, v in pairs(namemap) do if v(st) then return k end end
+  return "other"
+end
+
 addtype(types, "stat", "struct stat", mt.stat)
 
+-- TODO this is broken, need to use fields from the correct union technically
+-- ie check which of the unions we should be using and get all fields from that
+-- (note as per Musl list the standard kernel,glibc definitions are wrong too...)
 mt.siginfo = {
   index = {
     signo   = function(s) return s.si_signo end,
@@ -402,28 +539,6 @@ mt.sigaction = {
 
 addtype(types, "sigaction", "struct k_sigaction", mt.sigaction)
 
-mt.macaddr = {
-  __tostring = function(m)
-    local hex = {}
-    for i = 1, 6 do
-      hex[i] = string.format("%02x", m.mac_addr[i - 1])
-    end
-    return table.concat(hex, ":")
-  end,
-  __new = function(tp, str)
-    local mac = ffi.new(tp)
-    if str then
-      for i = 1, 6 do
-        local n = tonumber(str:sub(i * 3 - 2, i * 3 - 1), 16) -- TODO more checks on syntax
-        mac.mac_addr[i - 1] = n
-      end
-    end
-    return mac
-  end,
-}
-
-addtype(types, "macaddr", "struct {uint8_t mac_addr[6];}", mt.macaddr)
-
 mt.rlimit = {
   index = {
     cur = function(r) if r.rlim_cur == c.RLIM.INFINITY then return -1 else return tonumber(r.rlim_cur) end end,
@@ -442,58 +557,24 @@ mt.rlimit = {
   __new = newfn,
 }
 
+-- TODO some fields still missing
+mt.sigevent = {
+  index = {
+    notify = function(self) return self.sigev_notify end,
+    signo = function(self) return self.sigev_signo end,
+    value = function(self) return self.sigev_value end,
+  },
+  newindex = {
+    notify = function(self, v) self.sigev_notify = c.SIGEV[v] end,
+    signo = function(self, v) self.sigev_signo = c.SIG[v] end,
+    value = function(self, v) self.sigev_value = t.sigval(v) end, -- auto assigns based on type
+  },
+  __new = newfn,
+}
+
+addtype(types, "sigevent", "struct sigevent", mt.sigevent)
+
 addtype(types, "rlimit", "struct rlimit64", mt.rlimit)
-
-local function itnormal(v)
-  if not v then v = {{0, 0}, {0, 0}} end
-  if v.interval then
-    v.it_interval = v.interval
-    v.interval = nil
-  end
-  if v.value then
-    v.it_value = v.value
-    v.value = nil
-  end
-  if not v.it_interval then
-    v.it_interval = v[1]
-    v[1] = nil
-  end
-  if not v.it_value then
-    v.it_value = v[2]
-    v[2] = nil
-  end
-  return v
-end
-
-mt.itimerspec = {
-  index = {
-    interval = function(it) return it.it_interval end,
-    value = function(it) return it.it_value end,
-  },
-  __new = function(tp, v)
-    v = itnormal(v)
-    v.it_interval = istype(t.timespec, v.it_interval) or t.timespec(v.it_interval)
-    v.it_value = istype(t.timespec, v.it_value) or t.timespec(v.it_value)
-    return ffi.new(tp, v)
-  end,
-}
-
-addtype(types, "itimerspec", "struct itimerspec", mt.itimerspec)
-
-mt.itimerval = {
-  index = {
-    interval = function(it) return it.it_interval end,
-    value = function(it) return it.it_value end,
-  },
-  __new = function(tp, v)
-    v = itnormal(v)
-    v.it_interval = istype(t.timeval, v.it_interval) or t.timeval(v.it_interval)
-    v.it_value = istype(t.timeval, v.it_value) or t.timeval(v.it_value)
-    return ffi.new(tp, v)
-  end,
-}
-
-addtype(types, "itimerval", "struct itimerval", mt.itimerval)
 
 mt.signalfd = {
   index = {
@@ -1045,6 +1126,44 @@ mt.flock = {
 }
 
 addtype(types, "flock", "struct flock64", mt.flock)
+
+mt.mmsghdr = {
+  index = {
+    hdr = function(self) return self.msg_hdr end,
+    len = function(self) return self.msg_len end,
+  },
+  newindex = {
+    hdr = function(self, v) self.hdr = v end,
+  },
+  __new = newfn,
+}
+
+addtype(types, "mmsghdr", "struct mmsghdr", mt.mmsghdr)
+
+mt.mmsghdrs = {
+  __len = function(p) return p.count end,
+  __new = function(tp, ps)
+    if type(ps) == 'number' then return ffi.new(tp, ps, ps) end
+    local count = #ps
+    local mms = ffi.new(tp, count, count)
+    for n = 1, count do
+      mms.msg[n - 1].msg_hdr = mktype(t.msghdr, ps[n])
+    end
+    return mms
+  end,
+  __ipairs = function(p) return reviter, p.msg, p.count end -- TODO want forward iterator really...
+}
+
+addtype_var(types, "mmsghdrs", "struct {int count; struct mmsghdr msg[?];}", mt.mmsghdrs)
+
+-- this is declared above
+samap_pt = {
+  [c.AF.UNIX] = pt.sockaddr_un,
+  [c.AF.INET] = pt.sockaddr_in,
+  [c.AF.INET6] = pt.sockaddr_in6,
+  [c.AF.NETLINK] = pt.sockaddr_nl,
+  [c.AF.PACKET] = pt.sockaddr_ll,
+}
 
 return types
 

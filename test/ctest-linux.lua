@@ -34,7 +34,9 @@ ctypes["struct cpu_set_t"] = nil -- not actually a struct
 ctypes["dev_t"] = nil -- use kernel value not glibc
 ctypes["struct seccomp_data"] = nil -- not in ppc setup, remove for now
 ctypes["sigset_t"] = nil -- use kernel value not glibc
+ctypes["ucontext_t"] = nil -- as we use kernel sigset_t, ucontext differs too
 ctypes["struct {dev_t dev;}"] = nil -- not a real type
+ctypes["struct mmsghdr"] = nil -- not on Travis
 
 if abi.abi32 then
   ctypes["struct stat64"], ctypes["struct stat"] = ctypes["struct stat"], nil
@@ -151,7 +153,6 @@ c.STD = nil
 c.PORT_PROFILE_RESPONSE = nil
 c.AT_FDCWD = nil
 c.SYS.fstatat = nil
-c.TFD = nil
 c.TFD_TIMER = nil
 
 -- this lot are not in uClibc at present
@@ -297,8 +298,16 @@ c.PR.SET_NO_NEW_PRIVS = nil
 c.IP.MULTICAST_ALL = nil
 c.EM.TI_C6000 = nil
 
--- ppc glibc has wrong value, fixed in new constant test/
+-- ppc glibc has wrong value, fixed in new constant test
 c.CBAUDEX = nil
+
+-- missing on my mips box
+c.AUDIT_ARCH.H8300 = nil
+
+-- defined only in linux/termios.h which we cannot include on mips
+c.TIOCM.OUT1 = nil
+c.TIOCM.OUT2 = nil
+c.TIOCM.LOOP = nil
 
 -- glibc lies about what structure is used on ppc for termios TODO check all these ioctls
 if abi.arch == "ppc" then
@@ -308,6 +317,12 @@ if abi.arch == "ppc" then
   c.IOCTL.TCSETSF = nil
   c.IOCTL.TCSETSW = nil
 end
+
+if abi.arch == "mips" then
+  c.RLIM.INFINITY = nil -- incorrect in all but very recent glibc
+end
+
+c.IPV6.FLOWINFO = nil
 
 -- renames
 c.LINUX_CAPABILITY_VERSION = c._LINUX_CAPABILITY_VERSION
@@ -366,12 +381,13 @@ print [[
 #include <sys/wait.h>
 #include <dirent.h>
 #include <sys/eventfd.h>
-#include <syscall.h>
+#include <sys/syscall.h>
 #include <sys/ioctl.h>
 #include <elf.h>
 #include <net/ethernet.h>
 #include <sys/swap.h>
 #include <netinet/tcp.h>
+#include <sys/timerfd.h>
 
 #include <linux/capability.h>
 #include <linux/reboot.h>
@@ -400,6 +416,9 @@ print [[
 #include <linux/pci.h>
 //#include <linux/vfio.h>
 #include <linux/virtio_pci.h>
+
+/* not always defined */
+#define ENOATTR ENODATA
 
 int ret = 0;
 

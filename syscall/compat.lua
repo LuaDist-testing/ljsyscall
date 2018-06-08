@@ -37,18 +37,28 @@ function S.send(fd, buf, count, flags) return S.sendto(fd, buf, count, flags, ni
 local sigret = {}
 for k, v in pairs(c.SIGACT) do if k ~= "ERR" then sigret[v] = k end end
 
-function S.signal(signum, handler) -- defined in terms of sigaction
-  local oldact = t.sigaction()
-  local ok, err = S.sigaction(signum, handler, oldact)
-  if not ok then return nil, err end
-  local num = tonumber(t.intptr(oldact.sa_handler))
-  local ret = sigret[num]
-  if ret then return ret end -- return eg "IGN", "DFL" not a function pointer
-  return oldact.sa_handler
+if S.sigaction then
+  function S.signal(signum, handler) -- defined in terms of sigaction, see portability notes in Linux man page
+    local oldact = t.sigaction()
+    local ok, err = S.sigaction(signum, handler, oldact)
+    if not ok then return nil, err end
+    local num = tonumber(t.intptr(oldact.handler))
+    local ret = sigret[num]
+    if ret then return ret end -- return eg "IGN", "DFL" not a function pointer
+    return oldact.handler
+  end
 end
 
-if not S.pause then -- NetBSD and OSX deprecate pause
+if not S.pause and S.sigsuspend then -- NetBSD and OSX deprecate pause
   function S.pause() return S.sigsuspend(t.sigset()) end
+end
+
+if not S.alarm and S.setitimer then -- usually implemented via itimer, although Linux provides alarm as syscall
+  function S.alarm(sec)
+    local oldit, err = S.setitimer(c.ITIMER.REAL, {0, sec})
+    if not oldit then return nil, err end -- alarm not supposed to return errors but hey
+    return oldit.value.sec
+  end
 end
 
 -- non standard names
@@ -78,6 +88,15 @@ if S.utimensat and not S.futimens then
   end
 end
 
+-- some linux arhcitectures eg ARM do not have a time syscall
+if not S.time then
+  function S.time(t)
+    local tv = S.gettimeofday()
+    if t then t[0] = tv.sec end
+    return tv.sec
+  end
+end
+
 -- the utimes, futimes, lutimes are legacy, but OSX/FreeBSD do not support the nanosecond versions
 -- we support the legacy versions but do not fake the more precise ones
 S.futimes = S.futimes or S.futimens
@@ -92,9 +111,13 @@ if S.utimensat and not S.utimes then
   end
 end
 
+if not S.wait then
+  function S.wait(status) return S.waitpid(-1, 0, status) end
+end
+
 S.wait3 = function(options, rusage, status) return S.wait4(-1, options, rusage, status) end
 
-if S.wait4 and not S.waitpid then
+if not S.waitpid and S.wait4 then
   S.waitpid = function(pid, options, status) return S.wait4(pid, options, false, status) end
 end
 
@@ -105,18 +128,18 @@ end
 if not S.nanosleep then
   function S.nanosleep(req, rem)
     S.select({}, req)
-    if rem then rem = 0 end -- cannot tell how much time left, could be interrupted by a signal.
-    return 0
+    if rem then rem.sec, rem.nsec = 0, 0 end -- cannot tell how much time left, could be interrupted by a signal.
+    return true
   end
 end
 
 -- common libc function
-if S.nanosleep then
+if not S.sleep and S.nanosleep then
   function S.sleep(sec)
-    local rem, err = S.nanosleep(sec)
-    if not rem then return nil, err end
-    if rem == true then return 0 end
-    return tonumber(rem.tv_sec)
+    local ok, err, rem = S.nanosleep(sec)
+    if not ok then return nil, err end
+    if rem then return tonumber(rem.tv_sec) end
+    return 0
   end
 end
 

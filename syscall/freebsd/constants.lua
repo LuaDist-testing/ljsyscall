@@ -16,6 +16,8 @@ local bit = require "syscall.bit"
 local octal, multiflags, charflags, swapflags, strflag, atflag, modeflags
   = h.octal, h.multiflags, h.charflags, h.swapflags, h.strflag, h.atflag, h.modeflags
 
+local version = require "syscall.freebsd.version".version
+
 local ffi = require "ffi"
 
 local function charp(n) return ffi.cast("char *", n) end
@@ -131,12 +133,17 @@ c.E = strflag {
   PROTO         = 92,
   NOTCAPABLE    = 93,
   CAPMODE       = 94,
-  NOTRECOVERABLE= 95,
-  OWNERDEAD     = 96,
 }
 
+if version >= 10 then
+  c.E.NOTRECOVERABLE= 95
+  c.E.OWNERDEAD     = 96
+end
+
 -- alternate names
-c.E.WOULDBLOCK    = c.E.AGAIN
+c.EALIAS = {
+  WOULDBLOCK    = c.E.AGAIN,
+}
 
 c.AF = strflag {
   UNSPEC      = 0,
@@ -177,13 +184,16 @@ c.AF = strflag {
   ARP         = 35,
   BLUETOOTH   = 36,
   IEEE80211   = 37,
-  INET_SDP    = 40,
-  INET6_SDP   = 42,
 }
 
 c.AF.UNIX = c.AF.LOCAL
 c.AF.OSI = c.AF.ISO
 c.AF.E164 = c.AF.ISDN
+
+if version >= 10 then
+  c.AF.INET_SDP  = 40
+  c.AF.INET6_SDP = 42
+end
 
 c.O = multiflags {
   RDONLY      = 0x0000,
@@ -223,6 +233,14 @@ c.SIGACT = strflag {
   HOLD = 3,
 }
 
+c.SIGEV = strflag {
+  NONE      = 0,
+  SIGNAL    = 1,
+  THREAD    = 2,
+  KEVENT    = 3,
+  THREAD_ID = 4,
+}
+
 c.SIG = strflag {
   HUP = 1,
   INT = 2,
@@ -256,8 +274,10 @@ c.SIG = strflag {
   USR1 = 30,
   USR2 = 31,
   THR = 32,
-  LIBRT = 33,
 }
+
+if version >=10 then c.SIG.LIBRT = 33 end
+
 
 c.SIG.LWP = c.SIG.THR
 
@@ -305,9 +325,12 @@ c.SOCK = multiflags {
   RAW       = 3,
   RDM       = 4,
   SEQPACKET = 5,
-  CLOEXEC   = 0x10000000,
-  NONBLOCK  = 0x20000000,
 }
+
+if version >= 10 then
+  c.SOCK.CLOEXEC  = 0x10000000
+  c.SOCK.NONBLOCK = 0x20000000
+end
 
 c.SOL = strflag {
   SOCKET    = 0xffff,
@@ -396,7 +419,7 @@ c.MAP = multiflags {
 -- TODO add aligned maps in
 }
 
-if abi.abi64 then c.MAP["32BIT"] = 0x00080000 end
+if abi.abi64 and version >= 10 then c.MAP["32BIT"] = 0x00080000 end
 
 c.MCL = strflag {
   CURRENT    = 0x01,
@@ -425,11 +448,14 @@ c.MADV = strflag {
 }
 
 c.IPPROTO = strflag {
+  IP             = 0,
   HOPOPTS        = 0,
+  ICMP           = 1,
   IGMP           = 2,
   GGP            = 3,
   IPV4           = 4,
   IPIP           = 4,
+  TCP            = 6,
   ST             = 7,
   EGP            = 8,
   PIGP           = 9,
@@ -440,6 +466,7 @@ c.IPPROTO = strflag {
   EMCON          = 14,
   XNET           = 15,
   CHAOS          = 16,
+  UDP            = 17,
   MUX            = 18,
   MEAS           = 19,
   HMP            = 20,
@@ -624,8 +651,9 @@ c.MSG = multiflags {
   NBIO            = 0x4000,
   COMPAT          = 0x8000,
   NOSIGNAL        = 0x20000,
-  CMSG_CLOEXEC    = 0x40000,
 }
+
+if version >= 10 then c.MSG.CMSG_CLOEXEC = 0x40000 end
 
 c.PC = strflag {
   LINK_MAX          = 1,
@@ -905,14 +933,6 @@ c.CHFLAGS = multiflags {
   UF_OPAQUE      = 0x00000008,
   UF_NOUNLINK    = 0x00000010,
 
-  UF_SYSTEM      = 0x00000080,
-  UF_SPARSE      = 0x00000100,
-  UF_OFFLINE     = 0x00000200,
-  UF_REPARSE     = 0x00000400,
-  UF_ARCHIVE     = 0x00000800,
-  UF_READONLY    = 0x00001000,
-  UF_HIDDEN      = 0x00008000,
-
   SF_ARCHIVED    = 0x00010000,
   SF_IMMUTABLE   = 0x00020000,
   SF_APPEND      = 0x00040000,
@@ -924,6 +944,16 @@ c.CHFLAGS.IMMUTABLE = c.CHFLAGS.UF_IMMUTABLE + c.CHFLAGS.SF_IMMUTABLE
 c.CHFLAGS.APPEND = c.CHFLAGS.UF_APPEND + c.CHFLAGS.SF_APPEND
 c.CHFLAGS.OPAQUE = c.CHFLAGS.UF_OPAQUE
 c.CHFLAGS.NOUNLINK = c.CHFLAGS.UF_NOUNLINK + c.CHFLAGS.SF_NOUNLINK
+
+if version >=10 then
+  c.CHFLAGS.UF_SYSTEM   = 0x00000080
+  c.CHFLAGS.UF_SPARSE   = 0x00000100
+  c.CHFLAGS.UF_OFFLINE  = 0x00000200
+  c.CHFLAGS.UF_REPARSE  = 0x00000400
+  c.CHFLAGS.UF_ARCHIVE  = 0x00000800
+  c.CHFLAGS.UF_READONLY = 0x00001000
+  c.CHFLAGS.UF_HIDDEN   = 0x00008000
+end
 
 c.TCP = strflag {
   NODELAY    = 1,
@@ -976,11 +1006,12 @@ c.EV = multiflags {
   RECEIPT  = 0x0040,
   DISPATCH = 0x0080,
   SYSFLAGS = 0xF000,
-  DROP     = 0x1000,
   FLAG1    = 0x2000,
   EOF      = 0x8000,
   ERROR    = 0x4000,
 }
+
+if version >= 10 then c.EV.DROP = 0x1000 end
 
 c.EVFILT = strflag {
   READ     = -1,
@@ -1033,6 +1064,161 @@ c.SHM = strflag {
 c.PD = multiflags {
   DAEMON = 0x00000001,
 }
+
+c.ITIMER = strflag {
+  REAL    = 0,
+  VIRTUAL = 1,
+  PROF    = 2,
+}
+
+c.SA = multiflags {
+  ONSTACK   = 0x0001,
+  RESTART   = 0x0002,
+  RESETHAND = 0x0004,
+  NOCLDSTOP = 0x0008,
+  NODEFER   = 0x0010,
+  NOCLDWAIT = 0x0020,
+  SIGINFO   = 0x0040,
+}
+
+-- ipv6 sockopts
+c.IPV6 = strflag {
+  SOCKOPT_RESERVED1 = 3,
+  UNICAST_HOPS      = 4,
+  MULTICAST_IF      = 9,
+  MULTICAST_HOPS    = 10,
+  MULTICAST_LOOP    = 11,
+  JOIN_GROUP        = 12,
+  LEAVE_GROUP       = 13,
+  PORTRANGE         = 14,
+--ICMP6_FILTER      = 18, -- not namespaced as IPV6
+  CHECKSUM          = 26,
+  V6ONLY            = 27,
+  IPSEC_POLICY      = 28,
+  FAITH             = 29,
+  RTHDRDSTOPTS      = 35,
+  RECVPKTINFO       = 36,
+  RECVHOPLIMIT      = 37,
+  RECVRTHDR         = 38,
+  RECVHOPOPTS       = 39,
+  RECVDSTOPTS       = 40,
+  USE_MIN_MTU       = 42,
+  RECVPATHMTU       = 43,
+  PATHMTU           = 44,
+  PKTINFO           = 46,
+  HOPLIMIT          = 47,
+  NEXTHOP           = 48,
+  HOPOPTS           = 49,
+  DSTOPTS           = 50,
+  RTHDR             = 51,
+  RECVTCLASS        = 57,
+  TCLASS            = 61,
+  DONTFRAG          = 62,
+}
+
+c.CLOCK = strflag {
+  REALTIME           = 0,
+  VIRTUAL            = 1,
+  PROF               = 2,
+  MONOTONIC          = 4,
+  UPTIME             = 5,
+  UPTIME_PRECISE     = 7,
+  UPTIME_FAST        = 8,
+  REALTIME_PRECISE   = 9,
+  REALTIME_FAST      = 10,
+  MONOTONIC_PRECISE  = 11,
+  MONOTONIC_FAST     = 12,
+  SECOND             = 13,
+  THREAD_CPUTIME_ID  = 14,
+  PROCESS_CPUTIME_ID = 15,
+}
+
+c.EXTATTR_NAMESPACE = strflag {
+  EMPTY        = 0x00000000,
+  USER         = 0x00000001,
+  SYSTEM       = 0x00000002,
+}
+
+-- TODO mount flag is an int, so ULL is odd, but these are flags too...
+-- TODO many flags missing, plus FreeBSD has a lot more mount complexities
+c.MNT = strflag {
+  RDONLY      = 0x0000000000000001ULL,
+  SYNCHRONOUS = 0x0000000000000002ULL,
+  NOEXEC      = 0x0000000000000004ULL,
+  NOSUID      = 0x0000000000000008ULL,
+  NFS4ACLS    = 0x0000000000000010ULL,
+  UNION       = 0x0000000000000020ULL,
+  ASYNC       = 0x0000000000000040ULL,
+  SUIDDIR     = 0x0000000000100000ULL,
+  SOFTDEP     = 0x0000000000200000ULL,
+  NOSYMFOLLOW = 0x0000000000400000ULL,
+  GJOURNAL    = 0x0000000002000000ULL,
+  MULTILABEL  = 0x0000000004000000ULL,
+  ACLS        = 0x0000000008000000ULL,
+  NOATIME     = 0x0000000010000000ULL,
+  NOCLUSTERR  = 0x0000000040000000ULL,
+  NOCLUSTERW  = 0x0000000080000000ULL,
+  SUJ         = 0x0000000100000000ULL,
+
+  FORCE       = 0x0000000000080000ULL,
+}
+
+c.CTL = strflag {
+  UNSPEC     = 0,
+  KERN       = 1,
+  VM         = 2,
+  VFS        = 3,
+  NET        = 4,
+  DEBUG      = 5,
+  HW         = 6,
+  MACHDEP    = 7,
+  USER       = 8,
+  P1003_1B   = 9,
+  MAXID      = 10,
+}
+
+c.KERN = strflag {
+  OSTYPE            =  1,
+  OSRELEASE         =  2,
+  OSREV             =  3,
+  VERSION           =  4,
+  MAXVNODES         =  5,
+  MAXPROC           =  6,
+  MAXFILES          =  7,
+  ARGMAX            =  8,
+  SECURELVL         =  9,
+  HOSTNAME          = 10,
+  HOSTID            = 11,
+  CLOCKRATE         = 12,
+  VNODE             = 13,
+  PROC              = 14,
+  FILE              = 15,
+  PROF              = 16,
+  POSIX1            = 17,
+  NGROUPS           = 18,
+  JOB_CONTROL       = 19,
+  SAVED_IDS         = 20,
+  BOOTTIME          = 21,
+  NISDOMAINNAME     = 22,
+  UPDATEINTERVAL    = 23,
+  OSRELDATE         = 24,
+  NTP_PLL           = 25,
+  BOOTFILE          = 26,
+  MAXFILESPERPROC   = 27,
+  MAXPROCPERUID     = 28,
+  DUMPDEV           = 29,
+  IPC               = 30,
+  DUMMY             = 31,
+  PS_STRINGS        = 32,
+  USRSTACK          = 33,
+  LOGSIGEXIT        = 34,
+  IOV_MAX           = 35,
+  HOSTUUID          = 36,
+  ARND              = 37,
+  MAXID             = 38,
+}
+
+if version >= 10 then -- not supporting on freebsd 9 as different ABI, recommend upgrade to use
 
 local function CAPRIGHT(idx, b) return bit.bor64(bit.lshift64(1, 57 + idx), b) end
 
@@ -1146,6 +1332,8 @@ c.CAP_IOCTLS = multiflags {
 }
 
 c.CAP_RIGHTS_VERSION = 0 -- we do not understand others
+
+end -- freebsd >= 10
 
 return c
 

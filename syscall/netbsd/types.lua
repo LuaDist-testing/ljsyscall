@@ -1,4 +1,4 @@
--- BSD types
+-- NetBSD types
 
 local require, error, assert, tonumber, tostring,
 setmetatable, pairs, ipairs, unpack, rawget, rawset,
@@ -10,6 +10,8 @@ pcall, type, table, string
 local function init(types)
 
 local abi = require "syscall.abi"
+
+local version = require "syscall.netbsd.version".version
 
 local t, pt, s, ctypes = types.t, types.pt, types.s, types.ctypes
 
@@ -33,6 +35,7 @@ local addtypes = {
   fdset = "fd_set",
   clockid = "clockid_t",
   register = "register_t",
+  lwpid = "lwpid_t",
 }
 
 local addstructs = {
@@ -48,7 +51,7 @@ local addstructs = {
   in6_addrlifetime = "struct in6_addrlifetime",
 }
 
-if abi.netbsd.version == 6 then
+if version == 6 then
   addstructs.ptmget = "struct compat_60_ptmget"
 else
   addstructs.ptmget = "struct ptmget"
@@ -59,6 +62,7 @@ for k, v in pairs(addstructs) do addtype(types, k, v, lenmt) end
 
 -- 64 bit dev_t
 local function makedev(major, minor)
+  if type(major) == "table" then major, minor = major[1], major[2] end
   local dev = t.dev(major or 0)
   if minor then
     local low = bit.bor(bit.band(minor, 0xff), bit.lshift(bit.band(major, 0xfff), 8), bit.lshift(bit.band(minor, bit.bnot(0xff)), 12))
@@ -122,8 +126,29 @@ mt.stat = {
   },
 }
 
+-- add some friendlier names to stat, also for luafilesystem compatibility
+mt.stat.index.access = mt.stat.index.atime
+mt.stat.index.modification = mt.stat.index.mtime
+mt.stat.index.change = mt.stat.index.ctime
+
+local namemap = {
+  file             = mt.stat.index.isreg,
+  directory        = mt.stat.index.isdir,
+  link             = mt.stat.index.islnk,
+  socket           = mt.stat.index.issock,
+  ["char device"]  = mt.stat.index.ischr,
+  ["block device"] = mt.stat.index.isblk,
+  ["named pipe"]   = mt.stat.index.isfifo,
+}
+
+mt.stat.index.typename = function(st)
+  for k, v in pairs(namemap) do if v(st) then return k end end
+  return "other"
+end
+
 addtype(types, "stat", "struct stat", mt.stat)
 
+-- TODO see note in Linux, we should be consistently using the correct union
 mt.siginfo = {
   index = {
     signo   = function(s) return s._info._signo end,
@@ -194,6 +219,23 @@ mt.sigaction = {
 
 addtype(types, "sigaction", "struct sigaction", mt.sigaction)
 
+-- TODO some fields still missing
+mt.sigevent = {
+  index = {
+    notify = function(self) return self.sigev_notify end,
+    signo = function(self) return self.sigev_signo end,
+    value = function(self) return self.sigev_value end,
+  },
+  newindex = {
+    notify = function(self, v) self.sigev_notify = c.SIGEV[v] end,
+    signo = function(self, v) self.sigev_signo = c.SIG[v] end,
+    value = function(self, v) self.sigev_value = t.sigval(v) end, -- auto assigns based on type
+  },
+  __new = newfn,
+}
+
+addtype(types, "sigevent", "struct sigevent", mt.sigevent)
+
 mt.dirent = {
   index = {
     fileno = function(self) return tonumber(self.d_fileno) end,
@@ -245,6 +287,14 @@ mt.ifreq = {
 
 addtype(types, "ifreq", "struct ifreq", mt.ifreq)
 
+-- ifaliasreq takes sockaddr, but often want to supply in_addr as port irrelevant
+-- TODO want to return a sockaddr so can asign vs ffi.copy below, or fix sockaddr to be more like sockaddr_storage
+local function tosockaddr(v)
+  if ffi.istype(t.in_addr, v) then return t.sockaddr_in(0, v) end
+  if ffi.istype(t.in6_addr, v) then return t.sockaddr_in6(0, v) end
+  return mktype(t.sockaddr, v)
+end
+
 mt.ifaliasreq = {
   index = {
     name = function(ifra) return ffi.string(ifra.ifra_name) end,
@@ -257,9 +307,18 @@ mt.ifaliasreq = {
       assert(#v < c.IFNAMSIZ, "name too long")
       ifra.ifra_name = v
     end,
-    addr = function(ifra, v) ifra.ifra_addr = mktype(t.sockaddr, v) end,
-    dstaddr = function(ifra, v) ifra.ifra_dstaddr = mktype(t.sockaddr, v) end,
-    mask = function(ifra, v) ifra.ifra_mask = v end, -- TODO mask in form of sockaddr
+    addr = function(ifra, v)
+      local addr = tosockaddr(v)
+      ffi.copy(ifra.ifra_addr, addr, #addr)
+    end,
+    dstaddr = function(ifra, v)
+      local addr = tosockaddr(v)
+      ffi.copy(ifra.ifra_dstaddr, addr, #addr)
+    end,
+    mask = function(ifra, v)
+      local addr = tosockaddr(v)
+      ffi.copy(ifra.ifra_mask, addr, #addr)
+    end,
   },
   __new = newfn,
 }
@@ -282,15 +341,40 @@ mt.in6_aliasreq = {
       assert(#v < c.IFNAMSIZ, "name too long")
       ifra.ifra_name = v
     end,
-    addr = function(ifra, v) ifra.ifra_addr = mktype(t.sockaddr_in6, v) end,
-    dstaddr = function(ifra, v) ifra.ifra_dstaddr = mktype(t.sockaddr_in6, v) end,
-    mask = function(ifra, v) ifra.ifra_prefixmask = v end, -- TODO mask in form of sockaddr
-    lifetime = function(ifra, v) ifra.ifra_lifetime = v end,
+    addr = function(ifra, v)
+      local addr = tosockaddr(v)
+      ffi.copy(ifra.ifra_addr, addr, #addr)
+    end,
+    dstaddr = function(ifra, v)
+      local addr = tosockaddr(v)
+      ffi.copy(ifra.ifra_dstaddr, addr, #addr)
+    end,
+    prefixmask = function(ifra, v)
+      local addr = tosockaddr(v)
+      ffi.copy(ifra.ifra_prefixmask, addr, #addr)
+    end,
+    lifetime = function(ifra, v) ifra.ifra_lifetime = mktype(t.in6_addrlifetime, v) end,
   },
   __new = newfn,
 }
 
 addtype(types, "in6_aliasreq", "struct in6_aliasreq", mt.in6_aliasreq)
+
+mt.in6_addrlifetime = {
+  index = {
+    expire = function(self) return self.ia6t_expire end,
+    preferred = function(self) return self.ia6t_preferred end,
+    vltime = function(self) return self.ia6t_vltime end,
+    pltime = function(self) return self.ia6t_pltime end,
+  },
+  newindex = {
+    expire = function(self, v) self.ia6t_expire = mktype(t.time, v) end,
+    preferred = function(self, v) self.ia6t_preferred = mktype(t.time, v) end,
+    vltime = function(self, v) self.ia6t_vltime = c.ND6[v] end,
+    pltime = function(self, v) self.ia6t_pltime = c.ND6[v] end,
+  },
+  __new = newfn,
+}
 
 local ktr_type = {}
 for k, v in pairs(c.KTR) do ktr_type[v] = k end
@@ -500,6 +584,78 @@ mt.flock = {
 }
 
 addtype(types, "flock", "struct flock", mt.flock)
+
+mt.clockinfo = {
+  print = {"tick", "tickadj", "hz", "profhz", "stathz"},
+  __new = newfn,
+}
+
+addtype(types, "clockinfo", "struct clockinfo", mt.clockinfo)
+
+mt.loadavg = {
+  index = {
+    loadavg = function(self) return {tonumber(self.ldavg[0]) / tonumber(self.fscale),
+                                     tonumber(self.ldavg[1]) / tonumber(self.fscale),
+                                     tonumber(self.ldavg[2]) / tonumber(self.fscale)}
+    end,
+  },
+  __tostring = function(self)
+    local loadavg = self.loadavg
+    return string.format("{ %.2f, %.2f, %.2f }", loadavg[1], loadavg[2], loadavg[3])
+  end,
+}
+
+addtype(types, "loadavg", "struct loadavg", mt.loadavg)
+
+mt.vmtotal = {
+  index = {
+    rq = function(self) return self.t_rq end,
+    dw = function(self) return self.t_dw end,
+    pw = function(self) return self.t_pw end,
+    sl = function(self) return self.t_sl end,
+    vm = function(self) return self.t_vm end,
+    avm = function(self) return self.t_avm end,
+    rm = function(self) return self.t_rm end,
+    arm = function(self) return self.t_arm end,
+    vmshr= function(self) return self.t_vmshr end,
+    avmshr= function(self) return self.t_avmshr end,
+    rmshr = function(self) return self.t_rmshr end,
+    armshr = function(self) return self.t_armshr end,
+    free = function(self) return self.t_free end,
+  },
+  print = {"rq", "dw", "pw", "sl", "vm", "avm", "rm", "arm", "vmshr", "avmshr", "rmshr", "armshr", "free"},
+}
+
+addtype(types, "vmtotal", "struct vmtotal", mt.vmtotal)
+
+mt.mmsghdr = {
+  index = {
+    hdr = function(self) return self.msg_hdr end,
+    len = function(self) return self.msg_len end,
+  },
+  newindex = {
+    hdr = function(self, v) self.hdr = v end,
+  },
+  __new = newfn,
+}
+
+addtype(types, "mmsghdr", "struct mmsghdr", mt.mmsghdr)
+
+mt.mmsghdrs = {
+  __len = function(p) return p.count end,
+  __new = function(tp, ps)
+    if type(ps) == 'number' then return ffi.new(tp, ps, ps) end
+    local count = #ps
+    local mms = ffi.new(tp, count, count)
+    for n = 1, count do
+      mms.msg[n - 1].msg_hdr = mktype(t.msghdr, ps[n])
+    end
+    return mms
+  end,
+  __ipairs = function(p) return reviter, p.msg, p.count end -- TODO want forward iterator really...
+}
+
+addtype_var(types, "mmsghdrs", "struct {int count; struct mmsghdr msg[?];}", mt.mmsghdrs)
 
 return types
 

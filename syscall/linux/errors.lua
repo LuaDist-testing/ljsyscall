@@ -93,7 +93,7 @@ return {
   NOPROTOOPT = "Protocol not available",
   PROTONOSUPPORT = "Protocol not supported",
   SOCKTNOSUPPORT = "Socket type not supported",
-  NOTSUP = "Operation not supported",
+  OPNOTSUPP = "Operation not supported",
   PFNOSUPPORT = "Protocol family not supported",
   AFNOSUPPORT = "Address family not supported by protocol",
   ADDRINUSE = "Address already in use",
@@ -131,5 +131,10 @@ return {
   OWNERDEAD = "Owner died",
   NOTRECOVERABLE = "State not recoverable",
   RFKILL = "Operation not possible due to RF-kill",
+  -- only on some platforms
+  DEADLOCK = "File locking deadlock error",
+  INIT = "Reserved EINIT", -- what is correct message?
+  REMDEV = "Remote device", -- what is correct message?
+  HWPOISON = "Reserved EHWPOISON", -- what is correct message?
 }
 

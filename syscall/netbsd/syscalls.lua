@@ -65,7 +65,7 @@ function S.getvfsstat(flags, buf, size) -- note order of args as usually leave b
   flags = c.VFSMNT[flags or "WAIT"] -- default not zero
   if not buf then
     local n, err = C.getvfsstat(nil, 0, flags)
-    if not n then return nil, err end
+    if not n then return nil, t.error(err or errno()) end
     --buf = t.statvfss(n) -- TODO define
     size = s.statvfs * n
   end
@@ -93,14 +93,6 @@ function S.pollts(fds, timeout, set)
   return retnum(C.pollts(fds.pfd, #fds, timeout, set))
 end
 
-function S.sigaction(signum, handler, oldact)
-  if type(handler) == "string" or type(handler) == "function" then
-    handler = {handler = handler, mask = "", flags = 0} -- simple case like signal
-  end
-  if handler then handler = mktype(t.sigaction, handler) end
-  return retbool(C.sigaction(c.SIG[signum], handler, oldact))
-end
-
 function S.ktrace(tracefile, ops, trpoints, pid)
   return retbool(C.ktrace(tracefile, c.KTROP[ops], c.KTRFAC(trpoints, "V2"), pid))
 end
@@ -118,6 +110,21 @@ function S.ptsname(fd)
   local pm, err = S.ioctl(fd, "TIOCPTSNAME")
   if not pm then return nil, err end
   return ffi.string(pm.sn)
+end
+
+-- TODO we need to fix sigaction in NetBSD, syscall seems to have changed to sigaction_tramp
+function S.pause() return S.select({}) end -- select on nothing forever
+
+-- ksem functions. Not very well documented! You shoudl probably use pthreads in most cases
+function S.ksem_init(value, semid)
+  semid = semid or t.intptr1()
+  local ok, err = C._ksem_init(value, semid)
+  if not ok then return nil, t.error(err or errno()) end
+  return semid[0]
+end
+
+function S.ksem_destroy(semid)
+  return retbool(C._ksem_destroy(semid))
 end
 
 return S

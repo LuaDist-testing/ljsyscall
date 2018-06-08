@@ -30,7 +30,7 @@ local t, pt, s = types.t, types.pt, types.s
 local S = {}
 
 local function getdev(dev)
-  if type(dev) == "table" then t.device(dev) end
+  if type(dev) == "table" then return t.device(dev).dev end
   if ffi.istype(t.device, dev) then dev = dev.dev end
   return dev
 end
@@ -127,7 +127,7 @@ if C.preadv and C.pwritev then -- these are missing in eg OSX
 end
 function S.access(pathname, mode) return retbool(C.access(pathname, c.OK[mode])) end
 function S.lseek(fd, offset, whence)
-  return ret64(C.lseek(getfd(fd), offset or 0, c.SEEK[whence]))
+  return ret64(C.lseek(getfd(fd), offset or 0, c.SEEK[whence or c.SEEK.SET]))
 end
 function S.readlink(path, buffer, size)
   size = size or c.PATH_MAX
@@ -185,16 +185,25 @@ function S.sendto(fd, buf, count, flags, addr, addrlen)
   local saddr = pt.sockaddr(addr)
   return retnum(C.sendto(getfd(fd), buf, count or #buf, c.MSG[flags], saddr, addrlen or #addr))
 end
--- assume you always want address, as would use recv otherwise, but could support addr = false
 function S.recvfrom(fd, buf, count, flags, addr, addrlen)
-  addr = addr or t.sockaddr_storage()
-  addrlen = addrlen or #addr
-  if type(addrlen) == "number" then addrlen = t.socklen1(addrlen) end
-  local saddr = pt.sockaddr(addr)
-  local ret, err = C.recvfrom(getfd(fd), buf, count or #buf, c.MSG[flags], saddr, addrlen)
+  local saddr
+  if addr == false then
+    addr = nil
+    addrlen = nil
+  else
+    if addr then
+      addrlen = addrlen or #addr
+    else
+      addr = t.sockaddr_storage()
+      addrlen = addrlen or s.sockaddr_storage
+    end
+    if type(addrlen) == "number" then addrlen = t.socklen1(addrlen) end
+    saddr = pt.sockaddr(addr)
+  end
+  local ret, err = C.recvfrom(getfd(fd), buf, count or #buf, c.MSG[flags], saddr, addrlen) -- TODO addrlen 0 here???
   ret = tonumber(ret)
   if ret == -1 then return nil, t.error(err or errno()) end
-  return ret, nil, t.sa(addr, addrlen[0])
+  if addr then return ret, nil, t.sa(addr, addrlen[0]) else return ret end
 end
 function S.sendmsg(fd, msg, flags)
   if not msg then -- send a single byte message, eg enough to send credentials
@@ -205,6 +214,22 @@ function S.sendmsg(fd, msg, flags)
   return retnum(C.sendmsg(getfd(fd), msg, c.MSG[flags]))
 end
 function S.recvmsg(fd, msg, flags) return retnum(C.recvmsg(getfd(fd), msg, c.MSG[flags])) end
+
+-- TODO better handling of msgvec, create one structure/table
+if C.sendmmsg then
+  function S.sendmmsg(fd, msgvec, flags)
+    msgvec = mktype(t.mmsghdrs, msgvec)
+    return retbool(C.sendmmsg(getfd(fd), msgvec.msg, msgvec.count, c.MSG[flags]))
+  end
+end
+if C.recvmmsg then
+  function S.recvmmsg(fd, msgvec, flags, timeout)
+    if timeout then timeout = mktype(t.timespec, timeout) end
+    msgvec = mktype(t.mmsghdrs, msgvec)
+    return retbool(C.recvmmsg(getfd(fd), msgvec.msg, msgvec.count, c.MSG[flags], timeout))
+  end
+end
+
 -- TODO {get,set}sockopt may need better type handling see new unfinished sockopt file, plus not always c.SO[]
 function S.setsockopt(fd, level, optname, optval, optlen)
    -- allocate buffer for user, from Lua type if know how, int and bool so far
@@ -221,6 +246,7 @@ function S.getsockopt(fd, level, optname, optval, optlen)
   local len = t.socklen1(optlen)
   local ret, err = C.getsockopt(getfd(fd), c.SOL[level], c.SO[optname], optval, len)
   if ret == -1 then return nil, t.error(err or errno()) end
+  if len[0] ~= optlen then error("incorrect optlen for getsockopt: set " .. optlen .. " got " .. len[0]) end
   return optval[0] -- TODO will not work if struct, eg see netfilter
 end
 function S.bind(sockfd, addr, addrlen)
@@ -293,7 +319,7 @@ function S.select(sel, timeout) -- note same structure as returned
           exceptfds = fdisset(sel.exceptfds or {}, e), count = tonumber(ret)}
 end
 
--- TODO note that actual syscall modifies timeout, which is non standard, like ppoll
+-- TODO note that in Linux syscall modifies timeout, which is non standard, like ppoll
 function S.pselect(sel, timeout, set) -- note same structure as returned
   local r, w, e
   local nfds = 0
@@ -335,8 +361,10 @@ function S.setgroups(groups)
   if type(groups) == "table" then groups = t.groups(groups) end
   return retbool(C.setgroups(groups.count, groups.list))
 end
-function S.sigprocmask(how, set)
-  local oldset = t.sigset()
+
+function S.sigprocmask(how, set, oldset)
+  oldset = oldset or t.sigset()
+  if not set then how = c.SIGPM.SETMASK end -- value does not matter if set nil, just returns old set
   local ret, err = C.sigprocmask(c.SIGPM[how], t.sigset(set), oldset)
   if ret == -1 then return nil, t.error(err or errno()) end
   return oldset
@@ -350,8 +378,8 @@ end
 function S.sigsuspend(mask) return retbool(C.sigsuspend(t.sigset(mask))) end
 function S.kill(pid, sig) return retbool(C.kill(pid, c.SIG[sig])) end
 
--- _exit is the real exist syscall, or whatever is suitable if overridden in c.lua; libc.lua may override
-function S.exit(status) C._exit(c.EXIT[status]) end
+-- _exit is the real exit syscall, or whatever is suitable if overridden in c.lua; libc.lua may override
+function S.exit(status) C._exit(c.EXIT[status or 0]) end
 
 function S.fcntl(fd, cmd, arg)
   cmd = c.F[cmd]
@@ -415,11 +443,17 @@ function S.pipe(fd2)
   return true, nil, t.fd(fd2[0]), t.fd(fd2[1])
 end
 
-function S.gettimeofday(tv)
-  tv = tv or t.timeval() -- note it is faster to pass your own tv if you call a lot
-  local ret, err = C.gettimeofday(tv, nil)
-  if ret == -1 then return nil, t.error(err or errno()) end
-  return tv
+if C.gettimeofday then
+  function S.gettimeofday(tv)
+    tv = tv or t.timeval() -- note it is faster to pass your own tv if you call a lot
+    local ret, err = C.gettimeofday(tv, nil)
+    if ret == -1 then return nil, t.error(err or errno()) end
+    return tv
+  end
+end
+
+if C.settimeofday then
+  function S.settimeofday(tv) return retbool(C.settimeofday(tv, nil)) end
 end
 
 function S.getrusage(who, ru)
@@ -445,6 +479,24 @@ function S.wait4(pid, options, ru, status) -- note order of arguments changed as
   local ret, err = C.wait4(c.WAIT[pid], status, c.W[options], ru)
   if ret == -1 then return nil, t.error(err or errno()) end
   return ret, nil, t.waitstatus(status[0]), ru
+end
+
+if C.waitpid then
+  function S.waitpid(pid, options, status) -- note order of arguments changed as rarely supply status
+    status = status or t.int1()
+    local ret, err = C.waitpid(c.WAIT[pid], status, c.W[options])
+    if ret == -1 then return nil, t.error(err or errno()) end
+    return ret, nil, t.waitstatus(status[0])
+  end
+end
+
+if S.waitid then
+  function S.waitid(idtype, id, options, infop) -- note order of args, as usually dont supply infop
+    if not infop then infop = t.siginfo() end
+    local ret, err = C.waitid(c.P[idtype], id or 0, infop, c.W[options])
+    if ret == -1 then return nil, t.error(err or errno()) end
+    return infop
+  end
 end
 
 function S.setpriority(which, who, prio) return retbool(C.setpriority(c.PRIO[which], who or 0, prio)) end
@@ -598,13 +650,95 @@ if C.accept4 then
     return retfd(C.accept4(getfd(sockfd), saddr, addrlen, c.SOCK[flags]))
   end
 end
+if C.sigaction then
+  function S.sigaction(signum, handler, oldact)
+    if type(handler) == "string" or type(handler) == "function" then
+      handler = {handler = handler, mask = "", flags = 0} -- simple case like signal
+    end
+    if handler then handler = mktype(t.sigaction, handler) end
+    return retbool(C.sigaction(c.SIG[signum], handler, oldact))
+  end
+end
+if C.getitimer then
+  function S.getitimer(which, value)
+    value = value or t.itimerval()
+    local ret, err = C.getitimer(c.ITIMER[which], value)
+    if ret == -1 then return nil, t.error(err or errno()) end
+    return value
+  end
+end
+if C.setitimer then
+  function S.setitimer(which, it, oldtime)
+    oldtime = oldtime or t.itimerval()
+    local ret, err = C.setitimer(c.ITIMER[which], mktype(t.itimerval, it), oldtime)
+    if ret == -1 then return nil, t.error(err or errno()) end
+    return oldtime
+  end
+end
+if C.clock_getres then
+  function S.clock_getres(clk_id, ts)
+    ts = mktype(t.timespec, ts)
+    local ret, err = C.clock_getres(c.CLOCK[clk_id], ts)
+    if ret == -1 then return nil, t.error(err or errno()) end
+    return ts
+  end
+end
+if C.clock_gettime then
+  function S.clock_gettime(clk_id, ts)
+    ts = mktype(t.timespec, ts)
+    local ret, err = C.clock_gettime(c.CLOCK[clk_id], ts)
+    if ret == -1 then return nil, t.error(err or errno()) end
+    return ts
+  end
+end
+if C.clock_settime then
+  function S.clock_settime(clk_id, ts)
+    ts = mktype(t.timespec, ts)
+    return retbool(C.clock_settime(c.CLOCK[clk_id], ts))
+  end
+end
+if C.clock_nanosleep then
+  function S.clock_nanosleep(clk_id, flags, req, rem)
+    rem = rem or t.timespec()
+    local ret, err = C.clock_nanosleep(c.CLOCK[clk_id], c.TIMER[flags or 0], mktype(t.timespec, req), rem)
+    if ret == -1 then
+      if (err or errno()) == c.E.INTR then return true, nil, rem else return nil, t.error(err or errno()) end
+    end
+    return true -- no time remaining
+  end
+end
+
+if C.timer_create then
+  function S.timer_create(clk_id, sigev, timerid)
+    timerid = timerid or t.timer()
+    if sigev then sigev = mktype(t.sigevent, sigev) end
+    local ret, err = C.timer_create(c.CLOCK[clk_id], sigev, timerid:gettimerp())
+    if ret == -1 then return nil, t.error(err or errno()) end
+    return timerid
+  end
+  function S.timer_delete(timerid) return retbool(C.timer_delete(timerid:gettimer())) end
+  function S.timer_settime(timerid, flags, new_value, old_value)
+    if old_value ~= false then old_value = old_value or t.itimerspec() else old_value = nil end
+    new_value = mktype(t.itimerspec, new_value)
+    local ret, err = C.timer_settime(timerid:gettimer(), c.TIMER[flags], new_value, old_value)
+    if ret == -1 then return nil, t.error(err or errno()) end
+    return true, nil, old_value
+  end
+  function S.timer_gettime(timerid, curr_value)
+    curr_value = curr_value or t.itimerspec()
+    local ret, err = C.timer_gettime(timerid:gettimer(), curr_value)
+    if ret == -1 then return nil, t.error(err or errno()) end
+    return curr_value
+  end
+  function S.timer_getoverrun(timerid) return retnum(C.timer_getoverrun(timerid:gettimer())) end
+end
 
 -- legacy in many OSs, implemented using recvfrom, sendto
 if C.send then
-  function S.send(fd, buf, count, flags) return retnum(C.send(getfd(fd), buf, count or #buf, c.MSG[flags])) end
+  function S.send(fd, buf, count, flags) return retnum(C.send(getfd(fd), buf, count, c.MSG[flags])) end
 end
 if C.recv then
-  function S.recv(fd, buf, count, flags) return retnum(C.recv(getfd(fd), buf, count or #buf, c.MSG[flags])) end
+  function S.recv(fd, buf, count, flags) return retnum(C.recv(getfd(fd), buf, count, c.MSG[flags], false)) end
 end
 
 -- TODO not sure about this interface, maybe return rem as extra parameter see #103
@@ -613,10 +747,15 @@ if C.nanosleep then
     rem = rem or t.timespec()
     local ret, err = C.nanosleep(mktype(t.timespec, req), rem)
     if ret == -1 then
-      if (err or errno()) == c.E.INTR then return rem else return nil, t.error(err or errno()) end
+      if (err or errno()) == c.E.INTR then return true, nil, rem else return nil, t.error(err or errno()) end
     end
-    return 0 -- no time remaining
+    return true -- no time remaining
   end
+end
+
+-- getpagesize might be a syscall, or in libc, or may not exist
+if C.getpagesize then
+  function S.getpagesize() return retnum(C.getpagesize()) end
 end
 
 -- although the pty functions are not syscalls, we include here, like eg shm functions, as easier to provide as methods on fds
@@ -632,7 +771,10 @@ function S.isatty(fd)
   local tc, err = S.tcgetattr(fd)
   if tc then return true else return nil, err end
 end
-function S.tcgetsid(fd) return S.ioctl(fd, "TIOCGSID") end
+
+if c.IOCTL.TIOCGSID then -- OpenBSD only has in legacy ioctls
+  function S.tcgetsid(fd) return S.ioctl(fd, "TIOCGSID") end
+end
 
 -- now call OS specific for non-generic calls
 local hh = {

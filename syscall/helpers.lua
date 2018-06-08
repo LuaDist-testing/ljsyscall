@@ -7,12 +7,25 @@ require, error, assert, tonumber, tostring,
 setmetatable, pairs, ipairs, unpack, rawget, rawset,
 pcall, type, table, string, math
 
+local debug, collectgarbage = require "debug", collectgarbage
+
 local abi = require "syscall.abi"
 
 local ffi = require "ffi"
 local bit = require "syscall.bit"
 
 local h = {}
+
+-- generic assert helper, mainly for tests
+function h.assert(cond, err, ...)
+  if not cond then
+    error(tostring(err or "unspecified error")) -- annoyingly, assert does not call tostring!
+  end
+  collectgarbage("collect") -- force gc, to test for bugs
+  if type(cond) == "function" then return cond, err, ... end
+  if cond == true then return ... end
+  return cond, ...
+end
 
 local voidp = ffi.typeof("void *")
 
@@ -57,9 +70,17 @@ h.getfd = getfd
 -- generic function for __new
 function h.newfn(tp, tab)
   local obj = ffi.new(tp)
+  if not tab then return obj end
   -- these are split out so __newindex is called, not just initialisers luajit understands
-  for k, v in pairs(tab or {}) do if type(k) == "string" then obj[k] = v end end -- set string indexes
+  for k, v in pairs(tab) do if type(k) == "string" then obj[k] = v end end -- set string indexes
   return obj
+end
+
+-- generic function for __tostring
+local function simpleprint(pt, x)
+  local out = {}
+  for _, v in ipairs(pt) do out[#out + 1] = v .. " = " .. tostring(x[v]) end
+  return "{ " .. table.concat(out, ", ") .. " }"
 end
 
 -- type initialisation helpers
@@ -77,6 +98,7 @@ function h.addtype(types, name, tp, mt)
       mt.__newindex = function(tp, k, v) if newindex[k] then newindex[k](tp, v) else error("invalid index " .. k) end end
     end
     if not mt.__len then mt.__len = lenfn end -- default length function is just sizeof
+    if not mt.__tostring and mt.print then mt.__tostring = function(x) return simpleprint(mt.print, x) end end
     types.t[name] = ffi.metatype(tp, mt)
   else
     types.t[name] = ffi.typeof(tp)
@@ -182,7 +204,6 @@ end
 -- for single valued flags
 function h.strflag(tab)
   local function flag(cache, str)
-    if not str then return 0 end
     if type(str) ~= "string" then return str end
     if #str == 0 then return 0 end
     local s = trim(str):upper()

@@ -9,7 +9,11 @@ pcall, type, table, string
 
 local abi = require "syscall.abi"
 
-local arch = require("syscall.linux." .. abi.arch .. ".ffitypes") -- architecture specific definitions
+local ffi = require "ffi"
+
+require "syscall.ffitypes"
+
+local arch = require("syscall.linux." .. abi.arch .. ".ffi") -- architecture specific definitions
 
 local defs = {}
 
@@ -32,6 +36,7 @@ typedef uint32_t le32; /* this is little endian - not really using it yet */
 typedef uint32_t id_t;
 typedef unsigned int tcflag_t;
 typedef unsigned int speed_t;
+typedef int timer_t;
 
 /* despite glibc, Linux uses 32 bit dev_t */
 typedef uint32_t dev_t;
@@ -41,13 +46,6 @@ typedef unsigned long nfds_t;
 
 // should be a word, but we use 32 bits as bitops are signed 32 bit in LuaJIT at the moment
 typedef int32_t fd_mask;
-
-// again, should be a long
-// note this should be the kernel size (64 bits), glibc has a larger one. May be wrong for MIPS though where _NSIG=128.
-// need to bypass all libc handling though
-typedef struct {
-  int32_t val[1024 / (8 * sizeof (int32_t))];
-} sigset_t;
 
 // again should be a long, and we have wrapped in a struct
 // TODO ok to wrap Lua types but not syscall? https://github.com/justincormack/ljsyscall/issues/36
@@ -168,6 +166,10 @@ struct msghdr {
   void *msg_control;
   size_t msg_controllen;
   int msg_flags;
+};
+struct mmsghdr {
+  struct msghdr msg_hdr;
+  unsigned int msg_len;
 };
 struct sockaddr {
   sa_family_t sa_family;
@@ -698,10 +700,22 @@ struct rusage {
 };
 ]]
 
+append(arch.nsig or [[
+static const int _NSIG = 64;
+]]
+)
+
+append(arch.sigset or [[
+// again, should be a long
+static const int _NSIG_BPW = 32;
+typedef struct {
+  int32_t sig[_NSIG / _NSIG_BPW];
+} sigset_t;
+]]
+)
+
 -- both Glibc and Musl have larger termios at least for some architectures; I believe this is correct for kernel
-if arch.termios then append(arch.termios)
-else
-append [[
+append(arch.termios or [[
 struct termios {
   tcflag_t c_iflag;
   tcflag_t c_oflag;
@@ -711,7 +725,7 @@ struct termios {
   cc_t c_cc[19];
 };
 ]]
-end
+)
 
 -- Linux struct siginfo padding depends on architecture
 if abi.abi64 then
@@ -726,7 +740,7 @@ static const int SI_PAD_SIZE = (SI_MAX_SIZE / sizeof (int)) - 3;
 ]]
 end
 
-append [[
+append(arch.siginfo or [[
 typedef struct siginfo {
   int si_signo;
   int si_errno;
@@ -771,11 +785,10 @@ typedef struct siginfo {
   } _sifields;
 } siginfo_t;
 ]]
+)
 
 -- this is the type used by the rt_sigaction syscall NB have renamed the fields to sa_
-if arch.sigaction then append(arch.sigaction)
-else
-append [[
+append(arch.sigaction or [[
 struct k_sigaction {
   void (*sa_handler)(int);
   unsigned long sa_flags;
@@ -783,24 +796,29 @@ struct k_sigaction {
   unsigned sa_mask[2];
 };
 ]]
-end
+)
+
+-- these could vary be arch but do not yet
+append [[
+static const int sigev_preamble_size = sizeof(int) * 2 + sizeof(sigval_t);
+static const int sigev_max_size = 64;
+static const int sigev_pad_size = (sigev_max_size - sigev_preamble_size) / sizeof(int);
+typedef struct sigevent {
+  sigval_t sigev_value;
+  int sigev_signo;
+  int sigev_notify;
+  union {
+    int _pad[sigev_pad_size];
+    int _tid;
+    struct {
+      void (*_function)(sigval_t);
+      void *_attribute;
+    } _sigev_thread;
+  } _sigev_un;
+} sigevent_t;
+]]
 
 append(arch.ucontext) -- there is no default for ucontext and related types as very machine specific
-
-if arch.termio then append(arch.termio)
-else
-append [[
-static const int NCC = 8;
-struct termio {
-  unsigned short c_iflag;
-  unsigned short c_oflag;
-  unsigned short c_cflag;
-  unsigned short c_lflag;
-  unsigned char c_line;
-  unsigned char c_cc[NCC];
-};
-]]
-end
 
 if arch.statfs then append(arch.statfs)
 else
@@ -836,15 +854,13 @@ end
 append(arch.stat)
 
 -- epoll packed on x86_64 only (so same as x86)
-if arch.epoll then append(arch.epoll)
-else
-append [[
+append(arch.epoll or [[
 struct epoll_event {
   uint32_t events;
   epoll_data_t data;
 };
 ]]
-end
+)
 
 -- endian dependent
 if abi.le then
@@ -881,8 +897,13 @@ struct iocb {
 ]]
 end
 
-local ffi = require "ffi"
+-- functions, minimal for Linux as mainly use syscall
+append [[
+long syscall(int number, ...);
+
+int gettimeofday(struct timeval *tv, void *tz);
+int clock_gettime(clockid_t clk_id, struct timespec *tp);
+]]
 
 ffi.cdef(table.concat(defs, ""))
-
 

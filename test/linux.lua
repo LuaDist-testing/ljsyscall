@@ -2,6 +2,7 @@
 
 local function init(S)
 
+local helpers = require "syscall.helpers"
 local abi = S.abi
 local types = S.types
 local c = S.c
@@ -19,13 +20,7 @@ local t, pt, s = types.t, types.pt, types.s
 
 local nl = S.nl
 
-local function assert(cond, err, ...)
-  collectgarbage("collect") -- force gc, to test for bugs
-  if not cond then error(tostring(err)) end -- annoyingly, assert does not call tostring!
-  if type(cond) == "function" then return cond, err, ... end
-  if cond == true then return ... end
-  return cond, ...
-end
+local assert = helpers.assert
 
 local function fork_assert(cond, err, ...) -- if we have forked we need to fail in main thread not fork
   if not cond then
@@ -105,18 +100,27 @@ test.file_operations_linux = {
     assert(ok or err.OPNOTSUPP or err.NOSYS, "expect fallocate to succeed if supported")
     ok, err = S.posix_fallocate(fd, 0, 8192)
     assert(ok or err.OPNOTSUPP or err.NOSYS, "expect posix_fallocate to succeed if supported")
-    assert(S.readahead(fd, 0, 4096))
     -- disabled as will often give ENOSPC! TODO better test
     --local ok, err = S.fallocate(fd, "keep_size", largeval, largeval + 1) -- test 64 bit ops 8589934592, 8589934593
     --assert(ok or err.OPNOTSUPP or err.NOSYS, "expect fallocate to succeed if supported, got " .. tostring(err))
     assert(fd:close())
   end,
+  test_readahead = function()
+    local fd = assert(S.open(tmpfile, "creat, rdwr", "RWXU"))
+    assert(S.unlink(tmpfile))
+    local pagesize = S.getpagesize()
+    assert(fd:readahead(0, pagesize))
+    assert(fd:readahead(largeval, pagesize))
+    assert(fd:close())
+  end,
   test_sync_file_range = function()
     local fd = assert(S.creat(tmpfile, "0666"))
+    assert(S.unlink(tmpfile))
+    assert(fd:sync_file_range(0, 0, 0)) -- nop
+    assert(fd:sync_file_range(0, 4096, 0)) -- nop
     assert(fd:sync_file_range(0, 4096, "wait_before, write, wait_after"))
     assert(fd:sync_file_range(4096, 0, "wait_before, write, wait_after"))
     assert(fd:sync_file_range(1, 2, "wait_before, write, wait_after"))
-    assert(S.unlink(tmpfile))
     assert(fd:close())
   end,
 }
@@ -142,76 +146,6 @@ test.inotify = {
     assert(fd:close())
     assert(S.chdir(".."))
     assert(S.rmdir(tmpfile))
-  end,
-}
-
-test.xattr = {
-  teardown = clean,
-  test_xattr = function()
-    assert(S.creat(tmpfile, "0666"))
-    local l, err = S.listxattr(tmpfile)
-    if not l and err.NOSYS then error "skipped" end
-    local fd = assert(S.open(tmpfile, "rdwr"))
-    assert(#l == 0 or (#l == 1 and l[1] == "security.selinux"), "expect no xattr on new file")
-    l = assert(S.llistxattr(tmpfile))
-    assert(#l == 0 or (#l == 1 and l[1] == "security.selinux"), "expect no xattr on new file")
-    l = assert(fd:flistxattr())
-    assert(#l == 0 or (#l == 1 and l[1] == "security.selinux"), "expect no xattr on new file")
-    local nn = #l
-    local ok, err = S.setxattr(tmpfile, "user.test", "42", "create")
-    if not ok and err.NOTSUP then error "skipped" end
-    l = assert(S.listxattr(tmpfile))
-    assert(#l == nn + 1, "expect another attribute set")
-    assert(S.lsetxattr(tmpfile, "user.test", "44", "replace"))
-    assert(fd:fsetxattr("user.test2", "42"))
-    l = assert(S.listxattr(tmpfile))
-    assert(#l == nn + 2, "expect another attribute set")
-    local s = assert(S.getxattr(tmpfile, "user.test"))
-    assert(s == "44", "expect to read set value of xattr")
-    s = assert(S.lgetxattr(tmpfile, "user.test"))
-    assert(s == "44", "expect to read set value of xattr")
-    s = assert(fd:fgetxattr("user.test2"))
-    assert(s == "42", "expect to read set value of xattr")
-    local s, err = fd:fgetxattr("user.test3")
-    assert(err and err.nodata, "expect to get NODATA (=NOATTR) from non existent xattr")
-    s = assert(S.removexattr(tmpfile, "user.test"))
-    s = assert(S.lremovexattr(tmpfile, "user.test2"))
-    l = assert(S.listxattr(tmpfile))
-    assert(#l == nn, "expect no xattr now")
-    local s, err = fd:fremovexattr("user.test3")
-    assert(err and err.nodata, "expect to get NODATA (=NOATTR) from remove non existent xattr")
-    -- table helpers
-    local tt = assert(S.xattr(tmpfile))
-    local n = 0
-    for k, v in pairs(tt) do n = n + 1 end
-    assert(n == nn, "expect no xattr now")
-    tt = {}
-    for k, v in pairs{test = "42", test2 = "44"} do tt["user." .. k] = v end
-    assert(S.xattr(tmpfile, tt))
-    tt = assert(S.lxattr(tmpfile))
-    assert(tt["user.test2"] == "44" and tt["user.test"] == "42", "expect to return values set")
-    n = 0
-    for k, v in pairs(tt) do n = n + 1 end
-    assert(n == nn + 2, "expect 2 xattr now")
-    tt = {}
-    for k, v in pairs{test = "42", test2 = "44", test3="hello"} do tt["user." .. k] = v end
-    assert(fd:fxattr(tt))
-    tt = assert(fd:fxattr())
-    assert(tt["user.test2"] == "44" and tt["user.test"] == "42" and tt["user.test3"] == "hello", "expect to return values set")
-    n = 0
-    for k, v in pairs(tt) do n = n + 1 end
-    assert(n == nn + 3, "expect 3 xattr now")
-    assert(fd:close())
-    assert(S.unlink(tmpfile))
-  end,
-  test_xattr_long = function()
-    assert(S.creat(tmpfile, "RWXU", "0666"))
-    local l = string.rep("test", 500)
-    local ok, err = S.setxattr(tmpfile, "user.test", l, "create")
-    if not ok and (err.NOTSUP or err.NOSYS or err.OPNOTSUPP) then error "skipped" end
-    local tt = assert(S.getxattr(tmpfile, "user.test"))
-    assert_equal(tt, l, "should match string")
-    assert(S.unlink(tmpfile))
   end,
 }
 
@@ -274,20 +208,8 @@ test.timers_linux = {
     assert_equal(o.value.time, 0, "expect 0 from gettime as expired")
     assert(fd:close())
   end,
-  test_time = function()
+  test_time = function() -- this interface is not a syscall for other OSs, probably won't make compat interface
     local tt = S.time()
-  end,
-  test_clock = function()
-    local tt = assert(S.clock_getres("realtime"))
-    local tt = assert(S.clock_gettime("realtime"))
-    -- TODO add settime
-  end,
-  test_clock_nanosleep = function()
-    local rem = assert(S.clock_nanosleep("realtime", nil, 0.001))
-    assert_equal(rem, 0, "expect no elapsed time after clock_nanosleep")
-  end,
-  test_clock_nanosleep_abs = function()
-    assert(S.clock_nanosleep("realtime", "abstime", 0))
   end,
 }
 
@@ -295,7 +217,7 @@ test.misc_linux = {
   test_sysinfo = function()
     local i = assert(S.sysinfo()) -- TODO test values returned for some sanity
   end,
-  test_sysctl = function()
+  test_syslog = function()
     local syslog, err = S.syslog(10)
     if not syslog and err.PERM then return end -- Android gives EPERM here
     assert(syslog > 1, "syslog buffer should have positive size")
@@ -491,6 +413,8 @@ test.netlink = {
   end,
   test_getlink = function()
     local i = assert(nl.getlink())
+    local st, err = S.stat("/sys/class/net") -- just in case sysfs not mounted
+    if not st then error "skipped" end
     local df = assert(util.dirtable("/sys/class/net", true))
     assert_equal(#df, #i, "expect same number of interfaces as /sys/class/net")
     assert(i.lo, "expect a loopback interface")
@@ -605,7 +529,8 @@ test.netlink = {
     assert(lo:setmtu(mtu))
   end,
   test_interface_rename_root = function()
-    assert(nl.create_interface{name = "dummy0", type = "dummy"})
+    local ok, err = nl.create_interface{name = "dummy0", type = "dummy"}
+    if not ok and err.OPNOTSUPP then error "skipped" end
     local i = assert(nl.interfaces())
     assert(i.dummy0)
     assert(i.dummy0:rename("newname"))
@@ -614,7 +539,8 @@ test.netlink = {
     assert(i.newname:delete())
   end,
   test_interface_set_macaddr_root = function()
-    assert(nl.create_interface{name = "dummy0", type = "dummy"})
+    local ok, err = nl.create_interface{name = "dummy0", type = "dummy"}
+    if not ok and err.OPNOTSUPP then error "skipped" end
     local i = assert(nl.interfaces())
     assert(i.dummy0)
     assert(i.dummy0:setmac("46:9d:c9:06:dd:dd"))
@@ -635,6 +561,7 @@ test.netlink = {
   end,
   test_newlink_newif_dummy_root = function()
     local ok, err = nl.create_interface{name = "dummy0", type = "dummy"}
+    if not ok and err.OPNOTSUPP then error "skipped" end
     local i = assert(nl.interfaces())
     assert(i.dummy0, "expect dummy interface")
     assert(i.dummy0:delete())
@@ -648,7 +575,8 @@ test.netlink = {
     assert(i.br0:delete())
   end,
   test_dellink_by_name_root = function()
-    assert(nl.create_interface{name = "dummy0", type = "dummy"})
+    local ok, err = nl.create_interface{name = "dummy0", type = "dummy"}
+    if not ok and err.OPNOTSUPP then error "skipped" end
     local i = assert(nl.interfaces())
     assert(i.dummy0, "expect dummy interface")
     assert(nl.dellink(0, "ifname", "dummy0"))
@@ -674,6 +602,7 @@ test.netlink = {
   end,
   test_newaddr_root = function()
     local ok, err = nl.create_interface{name = "dummy0", type = "dummy"}
+    if not ok and err.OPNOTSUPP then error "skipped" end
     local i = assert(nl.interfaces())
     assert(i.dummy0:up())
     local af, netmask, address, bcast = c.AF.INET, 24, t.in_addr("10.10.10.1"), t.in_addr("10.10.10.255")
@@ -686,6 +615,7 @@ test.netlink = {
   end,
   test_newaddr_helper_root = function()
     local ok, err = nl.create_interface{name = "dummy0", type = "dummy"}
+    if not ok and err.OPNOTSUPP then error "skipped" end
     local i = assert(nl.interfaces())
     assert(i.dummy0:up())
     assert(i.dummy0:address("10.10.10.1/24"))
@@ -745,7 +675,8 @@ test.netlink = {
   end,
   test_netlink_events_root = function()
     local sock = assert(nl.socket("route", {groups = "link"}))
-    assert(nl.create_interface{name = "dummy1", type = "dummy"})
+    local ok, err = nl.create_interface{name = "dummy1", type = "dummy"}
+    if not ok and err.OPNOTSUPP then error "skipped" end
     local m = assert(nl.read(sock))
     assert(m.dummy1, "should find dummy 1 in returned info")
     assert_equal(m.dummy1.op, "newlink", "new interface")
@@ -758,7 +689,8 @@ test.netlink = {
     assert(sock:close())
   end,
   test_move_interface_ns_root = function()
-    assert(nl.create_interface{name = "dummy0", type = "dummy"})
+    local ok, err = nl.create_interface{name = "dummy0", type = "dummy"}
+    if not ok and err.OPNOTSUPP then error "skipped" end
     local i = assert(nl.interfaces())
     assert(i.dummy0, "expect dummy0 interface")
     local p = assert(S.clone("newnet"))
@@ -806,7 +738,8 @@ test.netlink = {
     assert(not i.veth1, "expect no veth1")
   end,
   test_newneigh_root = function()
-    assert(nl.create_interface{name = "dummy0", type = "dummy"})
+    local ok, err = nl.create_interface{name = "dummy0", type = "dummy"}
+    if not ok and err.OPNOTSUPP then error "skipped" end
     local i = assert(nl.interfaces())
     assert(i.dummy0:up())
     assert(i.dummy0:address("10.0.0.1/32"))
@@ -888,6 +821,7 @@ test.aio = {
   test_aio_setup = function()
     local ctx, err = S.io_setup(8)
     if not ctx and err.NOSYS then error "skipped" end
+    assert(ctx, err)
     assert(S.io_destroy(ctx))
   end,
 --[[ -- temporarily disabled gc and methods on aio
@@ -904,6 +838,7 @@ test.aio = {
   test_aio = function()
     local ctx, err = S.io_setup(8)
     if not ctx and err.NOSYS then error "skipped" end
+    assert(ctx, err)
     local abuf = assert(S.mmap(nil, 4096, "read, write", "private, anonymous", -1, 0))
     ffi.copy(abuf, teststring)
     local fd = S.open(tmpfile, "creat, direct, rdwr", "RWXU") -- use O_DIRECT or aio may not work
@@ -928,6 +863,7 @@ test.aio = {
   test_aio_error = function()
     local ctx, err = S.io_setup(8)
     if not ctx and err.NOSYS then error "skipped" end
+    assert(ctx, err)
     local abuf = assert(S.mmap(nil, 4096, "read, write", "private, anonymous", -1, 0))
     ffi.copy(abuf, teststring)
     local fd = S.open(tmpfile, "creat, direct, rdwr", "RWXU") -- use O_DIRECT or aio may not work
@@ -954,6 +890,7 @@ test.aio = {
   test_aio_fdsync = function()
     local ctx, err = S.io_setup(8)
     if not ctx and err.NOSYS then error "skipped" end
+    assert(ctx, err)
     local fd = S.open(tmpfile, "creat, direct, rdwr", "RWXU") -- use O_DIRECT or aio may not work
     local a = t.iocb_array{{opcode = "fdsync", data = 42, fildes = fd, buf = nil, nbytes = 0, offset = 0}}
     local ret = assert(S.io_submit(ctx, a))
@@ -973,6 +910,7 @@ test.aio = {
   test_aio_cancel = function()
     local ctx, err = S.io_setup(8)
     if not ctx and err.NOSYS then error "skipped" end
+    assert(ctx, err)
     local abuf = assert(S.mmap(nil, 4096, "read, write", "private, anonymous", -1, 0))
     ffi.copy(abuf, teststring)
     local fd = S.open(tmpfile, "creat, direct, rdwr", "RWXU")
@@ -996,6 +934,7 @@ test.aio = {
   test_aio_eventfd = function()
     local ctx, err = S.io_setup(8)
     if not ctx and err.NOSYS then error "skipped" end
+    assert(ctx, err)
     local abuf = assert(S.mmap(nil, 4096, "read, write", "private, anonymous", -1, 0))
     ffi.copy(abuf, teststring)
     local fd = S.open(tmpfile, "creat, direct, rdwr", "RWXU") -- need to use O_DIRECT for aio to work
@@ -1203,9 +1142,10 @@ test.misc_linux_root = {
   end,
 ]]
   test_reboot = function()
+    error "skipped" -- rebooting machine so not helpful
     local p = assert(S.clone("newpid"))
     if p == 0 then
-      fork_assert(S.reboot("restart")) -- will send SIGHUP to us as in pid namespace NB older kernels may reboot! if so disable test
+      fork_assert(S.reboot("restart")) -- will send SIGHUP to us as in pid namespace NB older kernels may reboot!
       S.pause()
     else
       local rpid, status = assert(S.waitpid(-1, "clone"))
@@ -1232,6 +1172,90 @@ test.bridge_linux = {
   test_bridge_delete_fail = function()
     local ok, err = util.bridge_del("nosuchbridge99")
     assert(not ok and (err.NOPKG or err.PERM or err.NXIO), err)
+  end,
+}
+
+-- also works on NetBSD but poor filesystem support
+test.xattr_linux = {
+  teardown = clean,
+  test_xattr_empty_fd = function()
+    if not S.fgetxattr then error "skipped" end
+    local fd = assert(S.creat(tmpfile, "rwxu"))
+    assert(S.unlink(tmpfile))
+    local n, err = fd:fgetxattr("user.myattr")
+    assert(not n, "expect failure")
+    assert(not n and (err.NOATTR or err.NOSYS or err.NOTSUP))
+    assert(not n, err)
+    assert(fd:close())
+  end,
+  test_xattr = function()
+    if not S.listxattr then error "skipped" end
+    assert(S.creat(tmpfile, "0666"))
+    local l, err = S.listxattr(tmpfile)
+    if not l and (err.NOSYS or err.NOTSUP) then error "skipped" end
+    assert(l, err)
+    local fd = assert(S.open(tmpfile, "rdwr"))
+    assert(#l == 0 or (#l == 1 and l[1] == "security.selinux"), "expect no xattr on new file")
+    l = assert(S.llistxattr(tmpfile))
+    assert(#l == 0 or (#l == 1 and l[1] == "security.selinux"), "expect no xattr on new file")
+    l = assert(fd:flistxattr())
+    assert(#l == 0 or (#l == 1 and l[1] == "security.selinux"), "expect no xattr on new file")
+    local nn = #l
+    local ok, err = S.setxattr(tmpfile, "user.test", "42", "create")
+    if not ok and err.NOTSUP then error "skipped" end
+    l = assert(S.listxattr(tmpfile))
+    assert(#l == nn + 1, "expect another attribute set")
+    assert(S.lsetxattr(tmpfile, "user.test", "44", "replace"))
+    assert(fd:fsetxattr("user.test2", "42"))
+    l = assert(S.listxattr(tmpfile))
+    assert(#l == nn + 2, "expect another attribute set")
+    local s = assert(S.getxattr(tmpfile, "user.test"))
+    assert(s == "44", "expect to read set value of xattr")
+    s = assert(S.lgetxattr(tmpfile, "user.test"))
+    assert(s == "44", "expect to read set value of xattr")
+    s = assert(fd:fgetxattr("user.test2"))
+    assert(s == "42", "expect to read set value of xattr")
+    local s, err = fd:fgetxattr("user.test3")
+    assert(err and err.nodata, "expect to get NODATA (=NOATTR) from non existent xattr")
+    s = assert(S.removexattr(tmpfile, "user.test"))
+    s = assert(S.lremovexattr(tmpfile, "user.test2"))
+    l = assert(S.listxattr(tmpfile))
+    assert(#l == nn, "expect no xattr now")
+    local s, err = fd:fremovexattr("user.test3")
+    assert(err and err.nodata, "expect to get NODATA (=NOATTR) from remove non existent xattr")
+    -- table helpers
+    local tt = assert(S.xattr(tmpfile))
+    local n = 0
+    for k, v in pairs(tt) do n = n + 1 end
+    assert(n == nn, "expect no xattr now")
+    tt = {}
+    for k, v in pairs{test = "42", test2 = "44"} do tt["user." .. k] = v end
+    assert(S.xattr(tmpfile, tt))
+    tt = assert(S.lxattr(tmpfile))
+    assert(tt["user.test2"] == "44" and tt["user.test"] == "42", "expect to return values set")
+    n = 0
+    for k, v in pairs(tt) do n = n + 1 end
+    assert(n == nn + 2, "expect 2 xattr now")
+    tt = {}
+    for k, v in pairs{test = "42", test2 = "44", test3="hello"} do tt["user." .. k] = v end
+    assert(fd:fxattr(tt))
+    tt = assert(fd:fxattr())
+    assert(tt["user.test2"] == "44" and tt["user.test"] == "42" and tt["user.test3"] == "hello", "expect to return values set")
+    n = 0
+    for k, v in pairs(tt) do n = n + 1 end
+    assert(n == nn + 3, "expect 3 xattr now")
+    assert(fd:close())
+    assert(S.unlink(tmpfile))
+  end,
+  test_xattr_long = function()
+    if not S.setxattr then error "skipped" end
+    assert(S.creat(tmpfile, "RWXU", "0666"))
+    local l = string.rep("test", 500)
+    local ok, err = S.setxattr(tmpfile, "user.test", l, "create")
+    if not ok and (err.NOTSUP or err.NOSYS or err.OPNOTSUPP or err.NOSPC) then error "skipped" end
+    local tt = assert(S.getxattr(tmpfile, "user.test"))
+    assert_equal(tt, l, "should match string")
+    assert(S.unlink(tmpfile))
   end,
 }
 
@@ -1274,7 +1298,8 @@ test.bpf = {
 }
 
 -- TODO remove arch tests. Unclear if my ppc/arm does not support or a bug, retest later with newer kernel
-if not (abi.arch == "ppc" or abi.arch == "arm" or S.__rump) then -- cannot test on rump as uses clone()
+-- still ppc issues with 3.12.6 ppc, need to debug more, and mips issues
+if not (abi.arch == "ppc" or abi.arch == "arm" or abi.arch == "mips" or S.__rump) then -- cannot test on rump as uses clone()
 test.seccomp = {
   test_no_new_privs = function() -- this must be done for non root to call type 2 seccomp
     local p = assert(S.clone())
@@ -1593,26 +1618,25 @@ test.mremap = { -- differs in prototype by OS
   end,
 }
 
+test.remap_file_pages = {
+  test_remap_file_pages = function()
+    local fd = assert(S.open(tmpfile, "rdwr,creat", "rwxu"))
+    assert(S.unlink(tmpfile))
+    local size = S.getpagesize()
+    local mem = assert(fd:mmap(nil, size, "read", "shared", 0))
+    assert(S.remap_file_pages(mem, size, 0, 0, 0))
+    assert(S.munmap(mem, size))
+    assert(fd:close())
+  end,
+}
+
 test.signals_linux = {
-  test_signal_return = function()
-    local ret = assert(S.signal("alrm", "ign"))
-    assert_equal(ret, "DFL")
-    local ret = assert(S.signal("alrm", "dfl"))
-    assert_equal(ret, "IGN")
-  end,
-  test_alarm = function()
-    assert(S.signal("alrm", "ign"))
-    assert(S.alarm(10))
-    assert(S.alarm(0)) -- cancel again
-    assert(S.signal("alrm", "dfl"))
-  end,
   test_itimer = function()
     local tt = assert(S.getitimer("real"))
     assert(tt.interval.sec == 0, "expect timer not set")
-    local ss = "alrm"
 
-    local fd = assert(S.signalfd(ss, "nonblock"))
-    assert(S.sigprocmask("block", ss))
+    local fd = assert(S.signalfd("alrm", "nonblock")) -- TODO make test portable
+    assert(S.sigprocmask("block", "alrm"))
 
     assert(S.setitimer("real", {0, 0.01}))
     assert(S.nanosleep(0.1)) -- nanosleep does not interact with itimer
@@ -1621,7 +1645,7 @@ test.signals_linux = {
     assert_equal(#sig, 1)
     assert(sig[1].alrm, "expect alarm clock to have rung")
     assert(fd:close())
-    assert(S.sigprocmask("unblock", ss))
+    assert(S.sigprocmask("unblock", "alrm"))
   end,
   test_sigprocmask = function()
     local m = assert(S.sigprocmask())
@@ -1707,17 +1731,18 @@ test.signals_linux = {
 }
 
 test.processes_linux = {
-  test_fork_waitid = function()
+  test_fork_waitid_linux = function() -- uses Linux specific waitid extension
     local pid0 = S.getpid()
     local pid = assert(S.fork())
-    if (pid == 0) then -- child
+    if pid == 0 then -- child
       fork_assert(S.getppid() == pid0, "parent pid should be previous pid")
       S.exit(23)
     else -- parent
-      local infop = assert(S.waitid("all", 0, "exited, stopped, continued"))
+      local infop, rusage = assert(S.waitid("all", 0, "exited, stopped, continued"))
       assert_equal(infop.signo, c.SIG.CHLD, "waitid to return SIGCHLD")
       assert_equal(infop.status, 23, "exit should be 23")
       assert_equal(infop.code, c.SIGCLD.EXITED, "normal exit expected")
+      assert(rusage)
     end
   end,
   test_clone = function()

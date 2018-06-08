@@ -11,6 +11,8 @@ local abi = require "syscall.abi"
 
 local bit = require "syscall.bit"
 
+local tobit = bit.tobit
+
 local arch = require("syscall.linux." .. abi.arch .. ".constants") -- architecture specific code
 
 local h = require "syscall.helpers"
@@ -74,8 +76,9 @@ end
 
 -- just for pipe2
 c.OPIPE = multiflags {
-  NONBLOCK  = octal('04000'),
-  CLOEXEC   = octal('02000000'),
+  NONBLOCK  = c.O.NONBLOCK,
+  CLOEXEC   = c.O.CLOEXEC,
+  DIRECT    = c.O.DIRECT,
 }
 
 -- for mq_attr NONBLOCK only flag allowed
@@ -313,6 +316,13 @@ c.SIGACT = strflag {
   HOLD = 2,
 }
 
+c.SIGEV = strflag {
+  SIGNAL    = 0,
+  NONE      = 1,
+  THREAD    = 2,
+  THREAD_ID = 4,
+}
+
 c.SIG = strflag(arch.SIG or {
   HUP = 1,
   INT = 2,
@@ -366,7 +376,7 @@ c.SFD = multiflags(arch.SFD or {
 })
 
 -- sockets note mix of single and multiple flags TODO code to handle temporarily using multi which is kind of ok
-c.SOCK = multiflags {
+c.SOCK = multiflags(arch.SOCK or {
   STREAM    = 1,
   DGRAM     = 2,
   RAW       = 3,
@@ -377,7 +387,7 @@ c.SOCK = multiflags {
 
   CLOEXEC  = octal('02000000'),
   NONBLOCK = octal('04000'),
-}
+})
 
 -- misc socket constants
 c.SCM = strflag {
@@ -388,7 +398,6 @@ c.SCM = strflag {
 -- setsockopt
 c.SOL = strflag {
   IP         = 0,
-  SOCKET     = 1,
   IPV6       = 41,
   ICMPV6     = 58,
   RAW        = 255,
@@ -399,6 +408,8 @@ c.SOL = strflag {
   AAL        = 265,
   IRDA       = 266,
 }
+
+if arch.SOLSOCKET then c.SOL.SOCKET = arch.SOLSOCKET else c.SOL.SOCKET = 1 end
 
 c.SO = strflag(arch.SO or {
   DEBUG       = 1,
@@ -634,8 +645,8 @@ c.TIME = strflag {
 
 c.TIME.BAD        = c.TIME.ERROR
 
--- xattr
-c.XATTR = strflag {
+-- xattr; defined as multi as 0 is default, even though both flags makes no sense
+c.XATTR = multiflags {
   CREATE  = 1,
   REPLACE = 2,
 }
@@ -711,10 +722,10 @@ c.RLIM = strflag {
 }
 
 -- timerfd
-c.TFD = multiflags {
+c.TFD = multiflags(arch.TFD or {
   CLOEXEC  = octal("02000000"),
   NONBLOCK = octal("04000"),
-}
+})
 
 c.TFD_TIMER = strflag {
   ABSTIME = 1,
@@ -1597,8 +1608,8 @@ c.ETHERTYPE = strflag {
 -- eventfd
 c.EFD = multiflags {
   SEMAPHORE = 1,
-  CLOEXEC = octal("02000000"),
-  NONBLOCK = octal("04000"),
+  CLOEXEC = c.O.CLOEXEC,
+  NONBLOCK = c.O.NONBLOCK,
 }
 
 -- mount
@@ -3084,11 +3095,17 @@ c.E = strflag(arch.E or {
   RFKILL        = 132,
 })
 
+-- ppc only redefines DEADLOCK, mips redefines all
+if arch.EDEADLOCK then c.E.DEADLOCK = arch.EDEADLOCK end
+
 -- alternate names
-c.E.WOULDBLOCK    = c.E.EAGAIN
-c.E.DEADLOCK      = c.E.EDEADLK
-c.E.NOATTR        = c.E.ENODATA
-c.E.NOTSUP        = c.E.OPNOTSUPP
+c.EALIAS = {
+  WOULDBLOCK    = c.E.AGAIN,
+  NOATTR        = c.E.NODATA,
+  NOTSUP        = c.E.OPNOTSUPP,
+}
+-- for most architectures this is an alias, but not ppc, mips
+if not c.E.DEADLOCK then c.EALIAS.DEADLOCK = c.E.DEADLK end
 
 c.SWAP_FLAG = swapflags {
   PREFER       = 0x8000,
@@ -3374,6 +3391,43 @@ c.TCP = strflag {
   REPAIR_OPTIONS     = 22,
   FASTOPEN           = 23,
   TIMESTAMP          = 24,
+}
+
+-- ipv6 sockopts
+c.IPV6 = strflag {
+  ADDRFORM          = 1,
+  ["2292PKTINFO"]   = 2,
+  ["2292HOPOPTS"]   = 3,
+  ["2292DSTOPTS"]   = 4,
+  ["2292RTHDR"]     = 5,
+  ["2292PKTOPTIONS"]= 6,
+  CHECKSUM          = 7,
+  ["2292HOPLIMIT"]  = 8,
+  NEXTHOP           = 9,
+  AUTHHDR           = 10,
+  FLOWINFO          = 11,
+  UNICAST_HOPS      = 16,
+  MULTICAST_IF      = 17,
+  MULTICAST_HOPS    = 18,
+  MULTICAST_LOOP    = 19,
+  ADD_MEMBERSHIP    = 20,
+  DROP_MEMBERSHIP   = 21,
+  ROUTER_ALERT      = 22,
+  MTU_DISCOVER      = 23,
+  MTU               = 24,
+  RECVERR           = 25,
+  V6ONLY            = 26,
+  JOIN_ANYCAST      = 27,
+  LEAVE_ANYCAST     = 28,
+}
+
+-- need to use tobit to make sure within int range
+c.LINUX_REBOOT = strflag {
+  MAGIC1    = tobit(0xfee1dead),
+  MAGIC2    = tobit(672274793),
+  MAGIC2A   = tobit(85072278),
+  MAGIC2B   = tobit(369367448),
+  MAGIC2C   = tobit(537993216),
 }
 
 return c

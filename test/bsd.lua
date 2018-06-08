@@ -12,13 +12,7 @@ local ffi = require "ffi"
 
 local t, pt, s = types.t, types.pt, types.s
 
-local function assert(cond, err, ...)
-  collectgarbage("collect") -- force gc, to test for bugs
-  if cond == nil then error(tostring(err)) end -- annoyingly, assert does not call tostring!
-  if type(cond) == "function" then return cond, err, ... end
-  if cond == true then return ... end
-  return cond, ...
-end
+local assert = helpers.assert
 
 local function fork_assert(cond, err, ...) -- if we have forked we need to fail in main thread not fork
   if not cond then
@@ -57,6 +51,13 @@ end
 
 local test = {}
 
+test.bsd_misc = {
+  test_sysctl_all = function()
+    local all, err = S.sysctl()
+    assert(all and type(all) == "table", "expect a table from all sysctls got " .. type(all))
+  end,
+}
+
 test.bsd_ids = {
   test_issetugid = function()
     if not S.issetugid then error "skipped" end
@@ -74,8 +75,15 @@ test.filesystem_bsd = {
     local pts = assert(S.open(pts_name, "rdwr, noctty"))
     assert(S.revoke(pts_name))
     local n, err = pts:read()
-    assert(not n and err.BADF, "access should be revoked")
-    assert(pts:close())
+    if n then -- correct behaviour according to man page
+      assert_equal(#n, 0) -- read returns EOF after revoke
+    else -- FreeBSD is NXIO Filed http://www.freebsd.org/cgi/query-pr.cgi?pr=188952
+         -- OSX is EIO
+      assert(not n and (err.IO or err.NXIO))
+    end
+    local n, err = pts:write("test") -- write fails after revoke
+    assert(not n and (err.IO or err.NXIO), "access should be revoked")
+    assert(pts:close()) -- close succeeds after revoke
     assert(fd:close())
   end,
   test_chflags = function()
@@ -91,6 +99,7 @@ test.filesystem_bsd = {
     assert(fd:close())
   end,
   test_lchflags = function()
+    if not S.lchflags then error "skipped" end
     local fd = assert(S.creat(tmpfile, "RWXU"))
     assert(fd:write("append"))
     assert(S.lchflags(tmpfile, "uf_append"))
@@ -128,6 +137,7 @@ test.filesystem_bsd = {
     assert(fd:close())
   end,
   test_lchmod = function()
+    if not S.lchmod then error "skipped" end
     local fd = assert(S.creat(tmpfile, "RWXU"))
     assert(S.lchmod(tmpfile, "RUSR, WUSR"))
     assert(S.access(tmpfile, "rw"))
@@ -223,6 +233,140 @@ test.kqueue = {
     end
     assert_equal(count, 1) -- will have expired by now
     assert(kfd:close())
+  end,
+}
+
+test.bsd_extattr = {
+  teardown = clean,
+  test_extattr_empty_fd = function()
+    if not S.extattr_get_fd then error "skipped" end
+    local fd = assert(S.creat(tmpfile, "rwxu"))
+    assert(S.unlink(tmpfile))
+    local n, err = fd:extattr_get("user", "myattr", false) -- false does raw call with no buffer to return length
+    if not n and err.OPNOTSUPP then error "skipped" end -- fs does not support extattr
+    assert(not n and err.NOATTR)
+    assert(fd:close())
+  end,
+  test_extattr_getsetdel_fd = function()
+    if not S.extattr_get_fd then error "skipped" end
+    local fd = assert(S.creat(tmpfile, "rwxu"))
+    assert(S.unlink(tmpfile))
+    local n, err = fd:extattr_get("user", "myattr", false) -- false does raw call with no buffer to return length
+    if not n and err.OPNOTSUPP then error "skipped" end -- fs does not support extattr
+    assert(not n and err.NOATTR)
+    local n, err = fd:extattr_set("user", "myattr", "myvalue")
+    if not n and err.OPNOTSUPP then error "skipped" end -- fs does not support setting extattr
+    assert(n, err)
+    assert_equal(n, #"myvalue")
+    local str = assert(fd:extattr_get("user", "myattr"))
+    assert_equal(str, "myvalue")
+    local ok = assert(fd:extattr_delete("user", "myattr"))
+    local str, err = fd:extattr_get("user", "myattr")
+    assert(not str and err.NOATTR)
+    assert(fd:close())
+  end,
+  test_extattr_getsetdel_file = function()
+    if not S.extattr_get_fd then error "skipped" end
+    local fd = assert(S.creat(tmpfile, "rwxu"))
+    assert(fd:close())
+    local n, err = S.extattr_get_file(tmpfile, "user", "myattr", false) -- false does raw call with no buffer to return length
+    if not n and err.OPNOTSUPP then error "skipped" end -- fs does not support extattr
+    assert(not n and err.NOATTR)
+    local n, err = S.extattr_set_file(tmpfile, "user", "myattr", "myvalue")
+    if not n and err.OPNOTSUPP then error "skipped" end -- fs does not support setting extattr
+    assert(n, err)
+    assert_equal(n, #"myvalue")
+    local str = assert(S.extattr_get_file(tmpfile, "user", "myattr"))
+    assert_equal(str, "myvalue")
+    local ok = assert(S.extattr_delete_file(tmpfile, "user", "myattr"))
+    local str, err = S.extattr_get_file(tmpfile, "user", "myattr")
+    assert(not str and err.NOATTR)
+    assert(S.unlink(tmpfile))
+  end,
+  test_extattr_getsetdel_link = function()
+    if not S.extattr_get_fd then error "skipped" end
+    assert(S.symlink(tmpfile2, tmpfile))
+    local n, err = S.extattr_get_link(tmpfile, "user", "myattr", false) -- false does raw call with no buffer to return length
+    if not n and err.OPNOTSUPP then error "skipped" end -- fs does not support extattr
+    assert(not n and err.NOATTR)
+    local n, err = S.extattr_set_link(tmpfile, "user", "myattr", "myvalue")
+    if not n and err.OPNOTSUPP then error "skipped" end -- fs does not support setting extattr
+    assert(n, err)
+    assert_equal(n, #"myvalue")
+    local str = assert(S.extattr_get_link(tmpfile, "user", "myattr"))
+    assert_equal(str, "myvalue")
+    local ok = assert(S.extattr_delete_link(tmpfile, "user", "myattr"))
+    local str, err = S.extattr_get_link(tmpfile, "user", "myattr")
+    assert(not str and err.NOATTR)
+    assert(S.unlink(tmpfile))
+  end,
+  test_extattr_list_fd = function()
+    if not S.extattr_list_fd then error "skipped" end
+    local fd = assert(S.creat(tmpfile, "rwxu"))
+    assert(S.unlink(tmpfile))
+    local attrs, err = fd:extattr_list("user")
+    if not attrs and err.OPNOTSUPP then error "skipped" end -- fs does not support extattr
+    assert(attrs, err)
+    assert_equal(#attrs, 0)
+    assert(fd:extattr_set("user", "myattr", "myvalue"))
+    local attrs = assert(fd:extattr_list("user"))
+    assert_equal(#attrs, 1)
+    assert_equal(attrs[1], "myattr")
+    assert(fd:extattr_set("user", "newattr", "newvalue"))
+    local attrs = assert(fd:extattr_list("user"))
+    assert_equal(#attrs, 2)
+    assert((attrs[1] == "myattr" and attrs[2] == "newattr") or (attrs[2] == "myattr" and attrs[1] == "newattr"))
+    assert(fd:close())
+  end,
+  test_extattr_list_file = function()
+    if not S.extattr_list_file then error "skipped" end
+    local fd = assert(S.creat(tmpfile, "rwxu"))
+    local attrs, err = S.extattr_list_file(tmpfile, "user")
+    if not attrs and err.OPNOTSUPP then error "skipped" end -- fs does not support extattr
+    assert(attrs, err)
+    assert_equal(#attrs, 0)
+    assert(S.extattr_set_file(tmpfile, "user", "myattr", "myvalue"))
+    local attrs = assert(S.extattr_list_file(tmpfile, "user"))
+    assert_equal(#attrs, 1)
+    assert_equal(attrs[1], "myattr")
+    assert(S.extattr_set_file(tmpfile, "user", "newattr", "newvalue"))
+    local attrs = assert(S.extattr_list_file(tmpfile, "user"))
+    assert_equal(#attrs, 2)
+    assert((attrs[1] == "myattr" and attrs[2] == "newattr") or (attrs[2] == "myattr" and attrs[1] == "newattr"))
+    assert(S.unlink(tmpfile))
+  end,
+  test_extattr_list_link = function()
+    if not S.extattr_list_file then error "skipped" end
+    assert(S.symlink(tmpfile2, tmpfile))
+    local attrs, err = S.extattr_list_link(tmpfile, "user")
+    if not attrs and err.OPNOTSUPP then error "skipped" end -- fs does not support extattr
+    assert(attrs, err)
+    assert_equal(#attrs, 0)
+    assert(S.extattr_set_link(tmpfile, "user", "myattr", "myvalue"))
+    local attrs = assert(S.extattr_list_link(tmpfile, "user"))
+    assert_equal(#attrs, 1)
+    assert_equal(attrs[1], "myattr")
+    assert(S.extattr_set_link(tmpfile, "user", "newattr", "newvalue"))
+    local attrs = assert(S.extattr_list_link(tmpfile, "user"))
+    assert_equal(#attrs, 2)
+    assert((attrs[1] == "myattr" and attrs[2] == "newattr") or (attrs[2] == "myattr" and attrs[1] == "newattr"))
+    assert(S.unlink(tmpfile))
+  end,
+  test_extattr_list_long = function()
+    if not S.extattr_list_fd then error "skipped" end
+    local fd = assert(S.creat(tmpfile, "rwxu"))
+    assert(S.unlink(tmpfile))
+    local attrs, err = fd:extattr_list("user")
+    if not attrs and err.OPNOTSUPP then error "skipped" end -- fs does not support extattr
+    assert(attrs, err)
+    assert_equal(#attrs, 0)
+    local count = 100
+    for i = 1, count do
+      assert(fd:extattr_set("user", "myattr" .. i, "myvalue"))
+    end
+    local attrs = assert(fd:extattr_list("user"))
+    assert_equal(#attrs, count)
+    assert(fd:close())
   end,
 }
 

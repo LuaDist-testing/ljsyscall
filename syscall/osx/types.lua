@@ -39,6 +39,7 @@ for k, v in pairs(addstructs) do addtype(types, k, v, lenmt) end
 
 -- 32 bit dev_t, 24 bit minor, 8 bit major
 local function makedev(major, minor)
+  if type(major) == "table" then major, minor = major[1], major[2] end
   local dev = major or 0
   if minor then dev = bit.bor(minor, bit.lshift(major, 24)) end
   return dev
@@ -92,6 +93,26 @@ mt.stat = {
     issock = function(st) return st.type == c.S_I.FSOCK end,
   },
 }
+
+-- add some friendlier names to stat, also for luafilesystem compatibility
+mt.stat.index.access = mt.stat.index.atime
+mt.stat.index.modification = mt.stat.index.mtime
+mt.stat.index.change = mt.stat.index.ctime
+
+local namemap = {
+  file             = mt.stat.index.isreg,
+  directory        = mt.stat.index.isdir,
+  link             = mt.stat.index.islnk,
+  socket           = mt.stat.index.issock,
+  ["char device"]  = mt.stat.index.ischr,
+  ["block device"] = mt.stat.index.isblk,
+  ["named pipe"]   = mt.stat.index.isfifo,
+}
+
+mt.stat.index.typename = function(st)
+  for k, v in pairs(namemap) do if v(st) then return k end end
+  return "other"
+end
 
 addtype(types, "stat", "struct stat", mt.stat)
 
@@ -187,6 +208,43 @@ mt.wait = {
 function t.waitstatus(status)
   return setmetatable({status = status}, mt.wait)
 end
+
+-- sigaction, standard POSIX behaviour with union of handler and sigaction
+addtype_fn(types, "sa_sigaction", "void (*)(int, siginfo_t *, void *)")
+
+mt.sigaction = {
+  index = {
+    handler = function(sa) return sa.__sigaction_u.__sa_handler end,
+    sigaction = function(sa) return sa.__sigaction_u.__sa_sigaction end,
+    mask = function(sa) return sa.sa_mask end,
+    flags = function(sa) return tonumber(sa.sa_flags) end,
+  },
+  newindex = {
+    handler = function(sa, v)
+      if type(v) == "string" then v = pt.void(c.SIGACT[v]) end
+      if type(v) == "number" then v = pt.void(v) end
+      sa.__sigaction_u.__sa_handler = v
+    end,
+    sigaction = function(sa, v)
+      if type(v) == "string" then v = pt.void(c.SIGACT[v]) end
+      if type(v) == "number" then v = pt.void(v) end
+      sa.__sigaction_u.__sa_sigaction = v
+    end,
+    mask = function(sa, v)
+      if not ffi.istype(t.sigset, v) then v = t.sigset(v) end
+      sa.sa_mask = v
+    end,
+    flags = function(sa, v) sa.sa_flags = c.SA[v] end,
+  },
+  __new = function(tp, tab)
+    local sa = ffi.new(tp)
+    if tab then for k, v in pairs(tab) do sa[k] = v end end
+    if tab and tab.sigaction then sa.sa_flags = bit.bor(sa.flags, c.SA.SIGINFO) end -- this flag must be set if sigaction set
+    return sa
+  end,
+}
+
+addtype(types, "sigaction", "struct sigaction", mt.sigaction)
 
 return types
 
