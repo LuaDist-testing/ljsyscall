@@ -1310,6 +1310,149 @@ test.bpf = {
   end,
 }
 
+-- test eBPF filters
+if S.bpf and not S.__rump then
+  test.bpf_root = {}
+  test.bpf_root.test_bpf_map_create = function()
+    local bpf = t.sock_filters(1, {
+      t.sock_filter("RET,K", 0)
+    })
+    -- Update
+    local key, klen = ffi.new('int [1]', 0xdead), ffi.sizeof('int')
+    local fd, err = assert(S.bpf_map_create(c.BPF_MAP.HASH, klen, klen, 10))
+    assert(S.bpf_map_op(c.BPF_CMD.MAP_UPDATE_ELEM, fd, key, key) == 0)
+    -- Retrieve
+    local val = ffi.new('int [1]', 0xbeef)
+    local ok, err = S.bpf_map_op(c.BPF_CMD.MAP_LOOKUP_ELEM, fd, key, val)
+    assert(ok and key[0] == val[0])
+    S.close(fd)
+  end
+  test.bpf_root.test_bpf_prog_load = function()
+    local bpf = t.bpf_insns(2, {
+      t.bpf_insn("ALU64,MOV,K", 0, 0, 0, 1),
+      t.bpf_insn("JMP,EXIT"),
+    })
+    local fd, err, log = S.bpf_prog_load(c.BPF_PROG.SOCKET_FILTER, bpf, 2)
+    if not fd then assert(false, err..': '..log) end
+    S.close(fd)
+  end
+end
+
+-- test perf_event_open
+if S.perf_event_open and not S.__rump then
+  test.perf_root = {}
+  test.perf_root.test_perf_open = function ()
+    -- Create perf event attribute with dummy config
+    local pe = t.perf_event_attr1()
+    pe[0].type = "software"
+    pe[0].config = "sw_dummy"
+    pe[0].disabled = 1
+    pe[0].exclude_kernel = 1
+    pe[0].exclude_hv = 1
+    -- Open event and read a dummy value
+    local fd = S.perf_event_open(pe)
+    fd:ioctl("PERF_EVENT_IOC_ENABLE", 0)
+    local count = t.buffer(ffi.sizeof('int64_t'))
+    local rb = fd:read(count, ffi.sizeof(count))
+    fd:ioctl("PERF_EVENT_IOC_DISABLE", 0)
+    fd:close()
+    -- Check just the size of read count
+    assert(rb == ffi.sizeof(count))
+  end
+  test.perf_root.test_perf_sw = function ()
+    -- Read out a software perf counter
+    local pe = t.perf_event_attr1()
+    pe[0].type = "software"
+    pe[0].config = "sw_cpu_clock"
+    pe[0].exclude_kernel = 1
+    pe[0].exclude_hv = 1
+    -- Open event and read a dummy value
+    -- @note perf event fd has CLO_EXEC, must not fork
+    local reader = t.perf_reader(S.perf_event_open(pe))
+    reader:start()
+    local ticks = reader:read()
+    reader:close()
+    -- Check just the size of read count
+    assert(ticks > 0)
+  end
+  test.perf_root.test_perf_attach = function ()
+    if not S.statfs("/sys/kernel/debug/tracing/events") then
+      print('skipping') -- debugfs must be mounted
+      return
+    end
+    -- Get tracepoint id
+    local tp = assert(S.perf_tracepoint("/sys/kernel/debug/tracing/events/syscalls/sys_enter_getcwd"))
+    local reader = S.perf_attach_tracepoint(tp)
+    -- Trace getcwd() syscall
+    reader:start()
+    S.getcwd()
+    S.getcwd()
+    local cnt = reader:read()
+    reader:stop()
+    reader:close()
+    -- Check value
+    assert(cnt == 2)
+  end
+  test.perf_root.test_perf_sampling = function ()
+    if not S.statfs("/sys/kernel/debug/tracing/events") then
+      print('skipping') -- debugfs must be mounted
+      return
+    end
+    local sample_t = ffi.typeof [[
+    struct {
+      struct perf_event_header header;
+      uint32_t size;
+      struct {
+        uint16_t id;
+        uint8_t flags;
+        uint8_t preempt_count;
+        int pid;
+      };
+      uint64_t ip;
+    } *
+    ]]
+    -- Get tracepoint id
+    local tp = assert(S.perf_tracepoint("/sys/kernel/debug/tracing/events/syscalls/sys_enter_getcwd"))
+    local reader = S.perf_attach_tracepoint(tp)
+    -- Trace getcwd() syscall
+    reader:mmap()
+    reader:start()
+    for i = 1,10 do S.getcwd() end
+    reader:stop()
+    -- Read samples from mmap
+    local cnt = 0;
+    for len,e in ipairs(reader) do
+      if e.type ~= c.PERF_RECORD.SAMPLE then break end
+      -- Check if we're the caller
+      e = ffi.cast(sample_t, e)
+      if e.pid == S.getpid() then
+        cnt = cnt + 1
+      end
+    end
+    reader:close()
+    -- Check if we got all samples
+    assert(cnt == 10)
+  end
+  test.perf_root.test_perf_kprobe = function ()
+    if not S.statfs("/sys/kernel/debug/tracing/events") then
+      print('skipping') -- debugfs must be mounted
+      return
+    end
+    -- Attach a kprobe to open()
+    local tp = assert(S.perf_probe("kprobe", "myprobe", "do_sys_open $retval", true))
+    local reader = S.perf_attach_tracepoint(tp)
+    reader:start()
+    S.open("/tmp", "rdonly")
+    local cnt = reader:read()
+    reader:stop()
+    reader:close()
+    -- Detach probe
+    S.perf_probe("kprobe", "myprobe", false)
+    -- See if we hit the probe
+    assert(cnt == 1)
+  end
+end
+
 -- TODO remove arch tests. Unclear if my ppc/arm does not support or a bug, retest later with newer kernel
 -- still ppc issues with 3.12.6 ppc, need to debug more, and mips issues
 if not (abi.arch == "ppc64le" or abi.arch == "ppc" or abi.arch == "mips" or S.__rump) then -- cannot test on rump as uses clone()
@@ -1476,7 +1619,7 @@ test.seccomp = {
       local pid = S.getpid()
       local ofd, err = S.open("/dev/null", "rdonly") -- not allowed
       fork_assert(not ofd, "should not run open")
-      fork_assert(err.errno == nr.SYS.open, "syscall that did not work should be open")
+      fork_assert(err.errno == nr.SYS.open or err.errno == nr.SYS.openat, "syscall that did not work should be open[at]")
       local pid = S.getpid()
       S._exit()
     else

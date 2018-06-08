@@ -1,9 +1,9 @@
 package = "ljsyscall"
-version = "0.11-1"
+version = "0.12-1"
 source =
 {
-  url = "https://github.com/justincormack/ljsyscall/archive/v0.11.tar.gz";
-  dir = "ljsyscall-0.11";
+  url = "https://github.com/justincormack/ljsyscall/archive/v0.12.tar.gz";
+  dir = "ljsyscall-0.12";
 }
 
 description =

@@ -159,6 +159,14 @@ local function fixup_constants(abi, c)
   c.RTA.PREF = nil
   c.RTA.VIA = nil
   c.RTA.MFC_STATS = nil
+  c.AUDIT_ARCH.AARCH64 = nil
+  c.SO.MAX_PACING_RATE = nil
+  c.SO.BPF_EXTENSIONS = nil
+  c.SO.INCOMING_CPU = nil
+  c.SO.ATTACH_BPF = nil
+  c.SO.DETACH_BPF = nil
+  c.SO.ATTACH_REUSEPORT_CBPF = nil
+  c.SO.ATTACH_REUSEPORT_EBPF = nil
 
   -- these are not even in linux git head headers or names wrong
   c.O.ASYNC = nil
@@ -206,9 +214,39 @@ local function fixup_constants(abi, c)
   c.SYS.getrandom = nil
   c.SYS.memfd_create = nil
   c.SYS.kexec_file_load = nil
+  c.SYS.bpf = nil
 
   -- new constants
   c.GRND = nil
+  -- requires Linux 3.19+, not supported on Travis
+  c.BPF_MAP = {}
+  c.BPF_CMD = {}
+  c.BPF_PROG = {}
+  c.BPF.ALU64 = nil
+  c.BPF.DW = nil
+  c.BPF.JSGT = nil
+  c.BPF.JSGE = nil
+  c.BPF.CALL = nil
+  c.BPF.EXIT = nil
+  c.BPF.TO_LE = nil
+  c.BPF.TO_BE = nil
+  c.BPF.END = nil
+  c.BPF.ARSH = nil
+  c.BPF.XADD = nil
+  c.BPF.JNE = nil
+  c.BPF.MOV = nil
+  c.BPF.ANY = nil
+  c.BPF.EXIST = nil
+  c.BPF.NOEXIST = nil
+  -- no perf_event_open on Travis CI
+  c.PERF_TYPE = {}
+  c.PERF_COUNT = {}
+  c.PERF_SAMPLE = {}
+  c.PERF_FLAG = {}
+  c.PERF_SAMPLE_REGS = {}
+  c.PERF_SAMPLE_BRANCH = {}
+  c.PERF_READ_FORMAT = {}
+  c.PERF_RECORD = {}
 
   return c
 end
