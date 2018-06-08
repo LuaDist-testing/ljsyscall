@@ -1,10 +1,10 @@
 -- This file was automatically generated for the LuaDist project.
 
 package = "ljsyscall"
-version = "0.10-1"
+version = "0.10-2"
 -- LuaDist source
 source = {
-  tag = "0.10-1",
+  tag = "0.10-2",
   url = "git://github.com/LuaDist-testing/ljsyscall.git"
 }
 -- Original source
@@ -41,6 +41,7 @@ build =
     ["syscall.compat"] = "syscall/compat.lua";
     ["syscall.bit"] = "syscall/bit.lua";
     ["syscall.types"] = "syscall/types.lua";
+    ["syscall.lfs"] = "syscall/lfs.lua";
 
     ["syscall.shared.types"] = "syscall/shared/types.lua";
   };
