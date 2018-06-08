@@ -29,13 +29,17 @@ local mt = {} -- metatables
 
 local addtypes = {
   fdset = "fd_set",
+  clock_serv = "clock_serv_t",
 }
 
 local addstructs = {
+  mach_timespec = "struct mach_timespec",
 }
 
 for k, v in pairs(addtypes) do addtype(types, k, v) end
 for k, v in pairs(addstructs) do addtype(types, k, v, lenmt) end
+
+t.clock_serv1 = ffi.typeof("clock_serv_t[1]")
 
 -- 32 bit dev_t, 24 bit minor, 8 bit major
 local function makedev(major, minor)
@@ -116,6 +120,15 @@ end
 
 addtype(types, "stat", "struct stat", mt.stat)
 
+-- for fstatat where we can'tseem to get 64 bit version at present
+addtype(types, "stat32", "struct stat32", mt.stat)
+
+local signames = {}
+local duplicates = {LWT = true, IOT = true, CLD = true, POLL = true}
+for k, v in pairs(c.SIG) do
+  if not duplicates[k] then signames[v] = k end
+end
+
 mt.siginfo = {
   index = {
     signo   = function(s) return s.si_signo end,
@@ -127,6 +140,7 @@ mt.siginfo = {
     addr    = function(s) return s.si_addr end,
     value   = function(s) return s.si_value end,
     band    = function(s) return s.si_band end,
+    signame = function(s) return signames[s.signo] end,
   },
   newindex = {
     signo   = function(s, v) s.si_signo = v end,

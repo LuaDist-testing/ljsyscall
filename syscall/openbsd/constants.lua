@@ -13,6 +13,8 @@ local h = require "syscall.helpers"
 
 local bit = require "syscall.bit"
 
+local version = require "syscall.openbsd.version".version
+
 local octal, multiflags, charflags, swapflags, strflag, atflag, modeflags
   = h.octal, h.multiflags, h.charflags, h.swapflags, h.strflag, h.atflag, h.modeflags
 
@@ -289,6 +291,11 @@ c.SOCK = multiflags {
   SEQPACKET = 5,
 }
 
+if version >= 201505 then
+  c.SOCK.NONBLOCK  = 0x4000
+  c.SOCK.CLOEXEC   = 0x8000
+end
+
 c.SOL = strflag {
   SOCKET    = 0xffff,
 }
@@ -361,11 +368,14 @@ c.MAP = multiflags {
   PRIVATE    = 0x0002,
   FILE       = 0x0000,
   FIXED      = 0x0010,
-  RENAME     = 0x0020,
-  NORESERVE  = 0x0040,
-  HASSEMAPHORE = 0x0200,
   ANON       = 0x1000,
 }
+
+if version < 201411 then -- defined in 5.6 but as zero so no effect
+  c.MAP.RENAME       = 0x0020
+  c.MAP.NORESERVE    = 0x0040
+  c.MAP.HASSEMAPHORE = 0x0200
+end
 
 c.MCL = strflag {
   CURRENT    = 0x01,
@@ -474,10 +484,13 @@ c.LOCK = multiflags {
 c.W = multiflags {
   NOHANG      = 1,
   UNTRACED    = 2,
-  ALTSIG      = 4,
   CONTINUED   = 8,
   STOPPED     = octal "0177",
 }
+
+if version < 201405 then
+  c.W.ALTSIG = 4
+end
 
 -- waitpid and wait4 pid
 c.WAIT = strflag {
@@ -838,7 +851,6 @@ c.SA = multiflags {
 
 -- ipv6 sockopts
 c.IPV6 = strflag {
-  SOCKOPT_RESERVED1 = 3,
   UNICAST_HOPS      = 4,
   MULTICAST_IF      = 9,
   MULTICAST_HOPS    = 10,
@@ -849,7 +861,6 @@ c.IPV6 = strflag {
 --ICMP6_FILTER      = 18, -- not namespaced as IPV6
   CHECKSUM          = 26,
   V6ONLY            = 27,
-  FAITH             = 29,
   RTHDRDSTOPTS      = 35,
   RECVPKTINFO       = 36,
   RECVHOPLIMIT      = 37,
@@ -870,13 +881,25 @@ c.IPV6 = strflag {
   DONTFRAG          = 62,
 }
 
+if version < 201405 then
+  c.IPV6.SOCKOPT_RESERVED1 = 3
+  c.IPV6.FAITH = 29
+end
+
 c.CLOCK = strflag {
   REALTIME                 = 0,
-  VIRTUAL                  = 1,
   PROCESS_CPUTIME_ID       = 2,
   MONOTONIC                = 3,
   THREAD_CPUTIME_ID        = 4,
 }
+
+if version < 201505 then
+  c.CLOCK.VIRTUAL = 1
+end
+
+if version >= 201505 then
+  c.CLOCK.UPTIME = 5
+end
 
 c.UTIME = strflag {
   NOW      = -2,
@@ -912,8 +935,6 @@ c.KERN = strflag {
   HOSTNAME          = 10,
   HOSTID            = 11,
   CLOCKRATE         = 12,
-  VNODE             = 13,
-  FILE              = 15,
   PROF              = 16,
   POSIX1            = 17,
   NGROUPS           = 18,
@@ -950,15 +971,12 @@ c.KERN = strflag {
   POOL              = 49,
   STACKGAPRANDOM    = 50,
   SYSVIPC_INFO      = 51,
-  USERCRYPTO        = 52,
-  CRYPTODEVALLOWSOFT= 53,
   SPLASSERT         = 54,
   PROC_ARGS         = 55,
   NFILES            = 56,
   TTYCOUNT          = 57,
   NUMVNODES         = 58,
   MBSTAT            = 59,
-  USERASYMCRYPTO    = 60,
   SEMINFO           = 61,
   SHMINFO           = 62,
   INTRCNT           = 63,
@@ -971,13 +989,28 @@ c.KERN = strflag {
   MAXLOCKSPERUID    = 70,
   CPTIME2           = 71,
   CACHEPCT          = 72,
-  FILE2             = 73,
+  FILE              = 73,
   CONSDEV           = 75,
   NETLIVELOCKS      = 76,
   POOL_DEBUG        = 77,
   PROC_CWD          = 78,
-  MAXID             = 79,
 }
+
+if version < 201405 then
+  c.KERN.FILE = 15
+  c.KERN.FILE2 = 73
+end
+
+if version >= 201411 then
+  c.KERN.PROC_NOBROADCASTKILL = 79
+end
+
+if version < 201505 then
+  c.KERN.VNODE = 13
+  c.KERN.USERCRYPTO = 52
+  c.KERN.CRYPTODEVALLOWSOFT = 53
+  c.KERN.USERASYMCRYPTO = 60
+end
 
 return c
 

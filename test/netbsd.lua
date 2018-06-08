@@ -203,19 +203,6 @@ test.misc_netbsd = {
     assert(b:close())
     assert(a:close())
   end,
--- BSD utimensat as same specification as Linux, but some functionality missing, so test simpler
-  test_utimensat = function()
-    local fd = assert(S.creat(tmpfile, "RWXU"))
-    local dfd = assert(S.open("."))
-    assert(S.utimensat(nil, tmpfile))
-    local st1 = fd:stat()
-    assert(S.utimensat("fdcwd", tmpfile, {"omit", "omit"}))
-    local st2 = fd:stat()
-    assert(st1.atime == st2.atime and st1.mtime == st2.mtime, "atime and mtime unchanged")
-    assert(S.unlink(tmpfile))
-    assert(fd:close())
-    assert(dfd:close())
-  end,
 }
 
 --[[ -- need to do in a thread as cannot exit
@@ -236,12 +223,15 @@ test.ktrace = {
     local kfd = assert(S.kqueue())
     local kevs = t.kevents{{fd = fd, filter = "vnode", flags = "add, enable, clear", fflags = "extend"}}
     assert(kfd:kevent(kevs, nil))
+    collectgarbage()
+    collectgarbage("stop")
     assert(S.ktrace(tmpfile, "set", "syscall, sysret", pid))
     -- now do something that should be in trace
     assert_equal(pid, S.getpid())
     assert(S.ktrace(tmpfile, "clear", "syscall, sysret", pid))
-    S.nanosleep(0.05) -- can be flaky and only get one event otherwise, TODO non racy fix
-    assert(kfd:kevent(nil, kevs, 1)) -- block until extend
+    S.nanosleep(0.05) -- can be flaky and only get one event otherwise, TODO not clear needed?
+    assert(kfd:kevent(nil, kevs)) -- block until extend
+    collectgarbage("restart")
     local buf = t.buffer(4096)
     local n = assert(fd:read(buf, 4096))
     local syscall, sysret = {}, {} -- on real OS luajit may do some memory allocations so may be extra calls occasionally

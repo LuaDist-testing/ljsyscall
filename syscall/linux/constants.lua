@@ -729,6 +729,7 @@ c.TFD = multiflags(arch.TFD or {
 
 c.TFD_TIMER = strflag {
   ABSTIME = 1,
+  CANCEL_ON_SET = 2,
 }
 
 -- poll
@@ -1161,6 +1162,10 @@ c.RTA = strflag {
   MP_ALGO = 14,
   TABLE = 15,
   MARK = 16,
+  MFC_STATS = 17,
+  VIA = 18,
+  NEWDST = 19,
+  PREF = 20,
 }
 
 -- route flags
@@ -3428,6 +3433,16 @@ c.LINUX_REBOOT = strflag {
   MAGIC2A   = tobit(85072278),
   MAGIC2B   = tobit(369367448),
   MAGIC2C   = tobit(537993216),
+}
+
+c.GRND = multiflags {
+  NONBLOCK = 0x0001,
+  RANDOM   = 0x0002,
+}
+
+c.MFD = multiflags {
+  CLOEXEC            = 0x0001,
+  ALLOW_SEALING      = 0x0002,
 }
 
 return c

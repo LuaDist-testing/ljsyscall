@@ -42,7 +42,6 @@ if S.__rump and abi.types == "linux" then -- Linux rump ABI cannot do much, so s
   assert(S.rump.newlwp(S.getpid()))
   assert(S.chmod("/", "0777"))
   assert(S.chmod("/dev/zero", "0666"))
-  assert(S.mkdir("/tmp", "0777"))
   local lwp1 = assert(S.rump.curlwp())
   assert(S.rump.rfork("CFDG"))
   S.rump.i_know_what_i_am_doing_sysent_usenative() -- switch to netBSD syscalls in this thread
@@ -62,7 +61,6 @@ if S.__rump and abi.types == "linux" then -- Linux rump ABI cannot do much, so s
 elseif (S.__rump or abi.xen) and S.geteuid() == 0 then -- some initial setup for non-Linux rump
   assert(S.rump.newlwp(S.getpid()))
   local octal = helpers.octal
-  assert(S.mkdir("/tmp", "0777"))
   local data = {ta_version = 1, ta_nodes_max=1000, ta_size_max=104857600, ta_root_mode = octal("0777")}
   assert(S.mount("tmpfs", "/tmp", 0, data))
   assert(S.chdir("/tmp"))
@@ -153,7 +151,10 @@ local clean = function()
 end
 
 -- type tests use reflection TODO move to seperate test file
-local ok, reflect = pcall(require, "include.ffi-reflect.reflect")
+local ok, reflect = nil, nil
+if not ffi.abi("64bit") or "x64" == ffi.arch then -- ffi-reflect does not support the new 64bit abi (LuaJIT's LJ_GC64 mode)
+  ok, reflect = pcall(require, "include.ffi-reflect.reflect")
+end
 if ok then
 test_types_reflect = {
   test_allocate = function() -- create an element of every ctype
@@ -589,6 +590,7 @@ test_file_operations = {
     assert(fd:close())
   end,
   test_dup2 = function()
+    if not S.dup2 then error "skipped" end
     local fd = assert(S.open("/dev/zero"))
     local fd2 = assert(fd:dup2(17))
     assert_equal(fd2:getfd(), 17, "dup2 should set file id as specified")
@@ -622,6 +624,12 @@ test_file_operations = {
   test_sync = function()
     S.sync() -- cannot fail...
   end,
+  test_syncfs = function()
+    if not S.syncfs then error "skipped" end
+    local fd = S.open("/dev/null")
+    assert(fd:syncfs())
+    assert(fd:close())
+  end, 
   test_fchmod = function()
     local fd = assert(S.creat(tmpfile, "RWXU"))
     assert(fd:fchmod("RUSR, WUSR"))
@@ -669,7 +677,7 @@ test_file_operations = {
     assert_equal(stat.gid, 55, "expect gid changed")
     assert(S.unlink(tmpfile))
   end,
-  test_sync = function()
+  test_fsync = function()
     local fd = assert(S.creat(tmpfile, "RWXU"))
     assert(fd:fsync())
     assert(fd:sync()) -- synonym
@@ -945,7 +953,7 @@ test_file_operations_at = {
     local fd = assert(S.open("."))
     assert(util.writefile(tmpfile, teststring, "RWXU"))
     local stat = assert(fd:fstatat(tmpfile))
-    assert(stat.size == #teststring, "expect length to br what was written")
+    assert(stat.size == #teststring, "expect length to be what was written")
     assert(fd:close())
     assert(S.unlink(tmpfile))
   end,
@@ -1348,7 +1356,9 @@ test_sockets_pipes = {
     assert(ss:nonblock())
     local sa = assert(t.sockaddr_in6(0, "loopback"))
     assert_equal(sa.family, c.AF.INET6)
-    assert(ss:bind(sa))
+    ok, err = ss:bind(sa)
+    if not ok and err.ADDRNOTAVAIL then error "skipped" end
+    assert(ok, err)
     local ba = assert(ss:getsockname())
     assert_equal(ba.family, c.AF.INET6)
     assert(ss:listen()) -- will fail if we did not bind
@@ -1402,6 +1412,7 @@ test_sockets_pipes = {
     local ok, err = cs:connect(ba6)
     local as = ss:accept()
     local ok, err = cs:connect(ba6)
+    if err.ADDRNOTAVAIL or err.NETUNREACH then error "skipped" end
     assert(ok or err.ISCONN, "unexpected error " .. tostring(err));
     assert(ss:block()) -- force accept to wait
     as = as or assert(ss:accept())
@@ -1447,7 +1458,9 @@ test_sockets_pipes = {
     assert(ss:setsockopt(c.IPPROTO.IPV6, c.IPV6.V6ONLY, 1))
     local sa = assert(t.sockaddr_in6(0, "loopback"))
     assert_equal(sa.family, c.AF.INET6)
-    assert(ss:bind(sa))
+    ok, err = ss:bind(sa)
+    if not ok and err.ADDRNOTAVAIL then error "skipped" end
+    assert(ok, err)
     local ba = assert(ss:getsockname())
     assert_equal(ba.family, c.AF.INET6)
     assert(ss:listen()) -- will fail if we did not bind
@@ -1475,9 +1488,34 @@ test_sockets_pipes = {
     assert(cs, err)
     local ba4 = t.sockaddr_in(ba.port, "loopback") -- TODO add function to convert sockaddr in6 to in4
     local ok, err = cs:connect(ba4)
-    assert(not ok and err.CONNREFUSED, "expect to get connection refused")
+    assert(not ok, "expect connect to fail with ipv4 connection when set to ipv6 only")
+    assert(err.CONNREFUSED, err)
     assert(cs:close())
     assert(as:close())
+    assert(ss:close())
+  end,
+  test_inet6_only_inet_conn_socket2 = function()
+    local ss, err = S.socket("inet6", "stream")
+    if not ss and err.AFNOSUPPORT then error "skipped" end
+    assert(ss, err)
+    assert(ss:nonblock())
+    assert(ss:setsockopt(c.IPPROTO.IPV6, c.IPV6.V6ONLY, 1))
+    local sa = assert(t.sockaddr_in6(0, "loopback"))
+    assert_equal(sa.family, c.AF.INET6)
+    ok, err = ss:bind(sa)
+    if not ok and err.ADDRNOTAVAIL then error "skipped" end
+    assert(ok, err)
+    local ba = assert(ss:getsockname())
+    assert_equal(ba.family, c.AF.INET6)
+    assert(ss:listen()) -- will fail if we did not bind
+    local cs, err = S.socket("inet", "stream") -- ipv4 client socket, will fail to connect
+    if not cs and err.AFNOSUPPORT then error "skipped" end
+    assert(cs, err)
+    local ba4 = t.sockaddr_in(ba.port, "loopback") -- TODO add function to convert sockaddr in6 to in4
+    local ok, err = cs:connect(ba4)
+    assert(not ok, "expect connect to fail with ipv4 connection when set to ipv6 only")
+    assert(err.CONNREFUSED, err)
+    assert(cs:close())
     assert(ss:close())
   end,
   test_udp_socket = function()
@@ -1503,7 +1541,9 @@ test_sockets_pipes = {
     local loop6 = "::1"
     local cs = assert(S.socket("inet6", "dgram"))
     local sa = assert(t.sockaddr_in6(0, loop6))
-    assert(ss:bind(sa))
+    ok, err = ss:bind(sa)
+    if not ok and err.ADDRNOTAVAIL then error "skipped" end
+    assert(ok, err)
     local bsa = ss:getsockname() -- find bound address
     local n = assert(cs:sendto(teststring, nil, c.MSG.NOSIGNAL or 0, bsa)) -- got a sigpipe here on MIPS
     local f = assert(ss:recv(buf, size))
@@ -1614,7 +1654,9 @@ test_sockets_pipes = {
     assert(s, err)
     local s = assert(S.socket("inet6", "stream"))
     local sa = t.sockaddr_in6(0, "loopback")
-    assert(s:bind(sa))
+    ok, err = s:bind(sa)
+    if not ok and err.ADDRNOTAVAIL then error "skipped" end
+    assert(ok, err)
     assert_equal(s:getsockopt("socket", "keepalive"), 0)
     assert(s:setsockopt("socket", "keepalive", 1))
     assert(s:getsockopt("socket", "keepalive") ~= 0)
@@ -1637,7 +1679,9 @@ test_sockets_pipes = {
     assert(s, err)
     local s = assert(S.socket("inet6", "stream"))
     local sa = t.sockaddr_in6(0, "loopback")
-    assert(s:bind(sa))
+    ok, err = s:bind(sa)
+    if not ok and err.ADDRNOTAVAIL then error "skipped" end
+    assert(ok, err)
     assert_equal(s:getsockopt(c.IPPROTO.TCP, c.TCP.NODELAY), 0)
     assert(s:setsockopt(c.IPPROTO.TCP, c.TCP.NODELAY, 1))
     assert(s:getsockopt(c.IPPROTO.TCP, c.TCP.NODELAY) ~= 0)
@@ -1723,7 +1767,9 @@ test_sockets_pipes = {
     local sa = t.sockaddr_storage()
     local sv1, sv2 = assert(S.socketpair("unix", "stream"))
     local msg = t.mmsghdrs{{iov = iov}}
-    assert(sv1:sendmmsg(msg))
+    local ok, err = sv1:sendmmsg(msg)
+    if not ok and err.NOSYS then error "skipped" end
+    assert(ok, err)
     local msg = t.mmsghdrs{{name = sa, iov = iov}}
     assert(sv2:recvmmsg(msg))
     assert_equal(msg.msg[0].len, #"test")
@@ -1848,7 +1894,8 @@ test_termios = {
     local ws, err = S.stdout:ioctl("TIOCGWINSZ")
     if not ws and err.NOTTY then error "skipped" end -- stdout might not be a tty in test env
     assert(ws, err)
-    assert(ws.row > 0 and ws.col > 0)
+    if ws.row == 0 and ws.col == 0 then error "skipped" end
+    assert(ws.row > 0 and ws.col > 0, "expect positive winsz")
   end,
 }
 
@@ -2182,9 +2229,6 @@ test_proc = {
     local found = false
     if #ps == 0 then error "skipped" end -- not mounted but mount point exists
     for i = 1, #ps do
-      if ps[i].pid == 1 then
-        assert(ps[i].cmdline:find("init") or ps[i].cmdline:find("systemd"), "expect init or systemd to be process 1 usually")
-      end
       if ps[i].pid == me then found = true end
     end
     assert(found, "expect to find my process in ps")
@@ -2201,7 +2245,6 @@ test_proc = {
     local p = util.proc(1)
     if not p.cmdline then error "skipped" end -- no files found, /proc not mounted
     assert(p and p.cmdline, "expect init to have cmdline")
-    assert(p.cmdline:find("init") or p.cmdline:find("systemd"), "expect init or systemd to be process 1 usually")
   end,
 }
 
@@ -2279,8 +2322,6 @@ test_processes = {
   end,
   test_fork_wait = function()
     local pid0 = S.getpid()
-    assert(pid0 > 1, "expecting my pid to be larger than 1")
-    assert(S.getppid() > 1, "expecting my parent pid to be larger than 1")
     local pid = assert(S.fork())
     if pid == 0 then -- child
       fork_assert(S.getppid() == pid0, "parent pid should be previous pid")
@@ -2294,8 +2335,6 @@ test_processes = {
   end,
   test_fork_waitpid = function()
     local pid0 = S.getpid()
-    assert(pid0 > 1, "expecting my pid to be larger than 1")
-    assert(S.getppid() > 1, "expecting my parent pid to be larger than 1")
     local pid = assert(S.fork())
     if pid == 0 then -- child
       fork_assert(S.getppid() == pid0, "parent pid should be previous pid")
@@ -2317,14 +2356,13 @@ test_processes = {
     else -- parent
       local infop = assert(S.waitid("all", 0, "exited, stopped, continued"))
       assert_equal(infop.signo, c.SIG.CHLD, "waitid to return SIGCHLD")
+      assert_equal(infop.signame, "CHLD", "name of signal is CHLD")
       assert_equal(infop.status, 23, "exit should be 23")
       assert_equal(infop.code, c.SIGCLD.EXITED, "normal exit expected")
     end
   end,
   test_fork_wait4 = function()
     local pid0 = S.getpid()
-    assert(pid0 > 1, "expecting my pid to be larger than 1")
-    assert(S.getppid() > 1, "expecting my parent pid to be larger than 1")
     local pid = assert(S.fork())
     if pid == 0 then -- child
       fork_assert(S.getppid() == pid0, "parent pid should be previous pid")
@@ -2339,8 +2377,6 @@ test_processes = {
   end,
   test_fork_wait3 = function()
     local pid0 = S.getpid()
-    assert(pid0 > 1, "expecting my pid to be larger than 1")
-    assert(S.getppid() > 1, "expecting my parent pid to be larger than 1")
     local pid = assert(S.fork())
     if pid == 0 then -- child
       fork_assert(S.getppid() == pid0, "parent pid should be previous pid")

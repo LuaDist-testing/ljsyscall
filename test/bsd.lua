@@ -89,7 +89,9 @@ test.filesystem_bsd = {
   test_chflags = function()
     local fd = assert(S.creat(tmpfile, "RWXU"))
     assert(fd:write("append"))
-    assert(S.chflags(tmpfile, "uf_append"))
+    local ok, err = S.chflags(tmpfile, "uf_append")
+    if not ok and err.OPNOTSUPP then error "skipped" end
+    assert(ok, err)
     assert(fd:write("append"))
     assert(fd:seek(0, "set"))
     local n, err = fd:write("not append")
@@ -102,7 +104,9 @@ test.filesystem_bsd = {
     if not S.lchflags then error "skipped" end
     local fd = assert(S.creat(tmpfile, "RWXU"))
     assert(fd:write("append"))
-    assert(S.lchflags(tmpfile, "uf_append"))
+    local ok, err = S.lchflags(tmpfile, "uf_append")
+    if not ok and err.OPNOTSUPP then error "skipped" end
+    assert(ok, err)
     assert(fd:write("append"))
     assert(fd:seek(0, "set"))
     local n, err = fd:write("not append")
@@ -114,7 +118,9 @@ test.filesystem_bsd = {
   test_fchflags = function()
     local fd = assert(S.creat(tmpfile, "RWXU"))
     assert(fd:write("append"))
-    assert(fd:chflags("uf_append"))
+    local ok, err = fd:chflags("uf_append")
+    if not ok and err.OPNOTSUPP then error "skipped" end
+    assert(ok, err)
     assert(fd:write("append"))
     assert(fd:seek(0, "set"))
     local n, err = fd:write("not append")
@@ -127,7 +133,9 @@ test.filesystem_bsd = {
     if not S.chflagsat then error "skipped" end
     local fd = assert(S.creat(tmpfile, "RWXU"))
     assert(fd:write("append"))
-    assert(S.chflagsat("fdcwd", tmpfile, "uf_append", "symlink_nofollow"))
+    local ok, err = S.chflagsat("fdcwd", tmpfile, "uf_append", "symlink_nofollow")
+    if not ok and err.OPNOTSUPP then error "skipped" end
+    assert(ok, err)
     assert(fd:write("append"))
     assert(fd:seek(0, "set"))
     local n, err = fd:write("not append")
@@ -143,6 +151,20 @@ test.filesystem_bsd = {
     assert(S.access(tmpfile, "rw"))
     assert(S.unlink(tmpfile))
     assert(fd:close())
+  end,
+  test_utimensat = function()
+    -- BSD utimensat as same specification as Linux, but some functionality missing, so test simpler
+    if not S.utimensat then error "skipped" end
+    local fd = assert(S.creat(tmpfile, "RWXU"))
+    local dfd = assert(S.open("."))
+    assert(S.utimensat(nil, tmpfile))
+    local st1 = fd:stat()
+    assert(S.utimensat("fdcwd", tmpfile, {"omit", "omit"}))
+    local st2 = fd:stat()
+    assert(st1.mtime == st2.mtime, "mtime unchanged") -- cannot test atime as stat touches it
+    assert(S.unlink(tmpfile))
+    assert(fd:close())
+    assert(dfd:close())
   end,
 }
 
@@ -227,7 +249,7 @@ test.kqueue = {
     local kevs = t.kevents{{ident = 0, filter = "timer", flags = "add, oneshot", data = 10}}
     assert(kfd:kevent(kevs, nil))
     local count = 0
-    for k, v in assert(kfd:kevent(nil, kevs, 1)) do -- 1s timeout, longer than 10ms timer interval
+    for k, v in assert(kfd:kevent(nil, kevs)) do
       assert_equal(v.size, 1) -- count of expiries is 1 as oneshot
       count = count + 1
     end
@@ -244,7 +266,8 @@ test.bsd_extattr = {
     assert(S.unlink(tmpfile))
     local n, err = fd:extattr_get("user", "myattr", false) -- false does raw call with no buffer to return length
     if not n and err.OPNOTSUPP then error "skipped" end -- fs does not support extattr
-    assert(not n and err.NOATTR)
+    assert(not n, "expected to fail")
+    assert(err.NOATTR, err)
     assert(fd:close())
   end,
   test_extattr_getsetdel_fd = function()
@@ -253,7 +276,8 @@ test.bsd_extattr = {
     assert(S.unlink(tmpfile))
     local n, err = fd:extattr_get("user", "myattr", false) -- false does raw call with no buffer to return length
     if not n and err.OPNOTSUPP then error "skipped" end -- fs does not support extattr
-    assert(not n and err.NOATTR)
+    assert(not n, "expected to fail")
+    assert(err.NOATTR, err)
     local n, err = fd:extattr_set("user", "myattr", "myvalue")
     if not n and err.OPNOTSUPP then error "skipped" end -- fs does not support setting extattr
     assert(n, err)
@@ -392,7 +416,6 @@ if not S.__rump then
       assert(S.waitpid(pid))
     end
   end
---[[ -- TODO temporarily disabled until signal functions added to the BSDs
   test.kqueue.test_kqueue_signal = function()
     assert(S.signal("alrm", "ign"))
     local kfd = assert(S.kqueue())
@@ -408,7 +431,6 @@ if not S.__rump then
     assert_equal(count, 1)
     assert(S.signal("alrm", "dfl"))
   end
-]]
 end
 
 return test

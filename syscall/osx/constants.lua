@@ -1101,5 +1101,25 @@ c.KERN = strflag {
   THREADNAME        = 71,
 }
 
+-- actually SYSTEM_CLOCK etc, renamed
+c.CLOCKTYPE = {
+  SYSTEM   = 0,
+  CALENDAR = 1,
+}
+
+c.CLOCKTYPE.REALTIME = c.CLOCKTYPE.SYSTEM
+
+-- AT constants only in recent versions, should check when added
+c.AT_FDCWD = atflag {
+  FDCWD = -2,
+}
+
+c.AT = multiflags {
+  EACCESS          = 0x0010,
+  SYMLINK_NOFOLLOW = 0x0020,
+  SYMLINK_FOLLOW   = 0x0040,
+  REMOVEDIR        = 0x0080,
+}
+
 return c
 

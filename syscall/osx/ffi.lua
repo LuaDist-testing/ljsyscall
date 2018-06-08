@@ -30,7 +30,8 @@ typedef int64_t blkcnt_t;
 typedef int32_t blksize_t;
 typedef int32_t suseconds_t;
 typedef uint16_t nlink_t;
-typedef uint64_t ino_t; // at least on recent desktop; TODO define as ino64_t
+typedef uint64_t ino64_t;
+typedef uint32_t ino_t;
 typedef long time_t;
 typedef int32_t daddr_t;
 typedef unsigned long clock_t;
@@ -38,14 +39,45 @@ typedef unsigned int nfds_t;
 typedef uint32_t id_t; // check as not true in freebsd
 typedef unsigned long tcflag_t;
 typedef unsigned long speed_t;
+typedef	int kern_return_t;
 
-/* osx does not have the clock_ functions so clockid undefined, but so headers work, define it
+typedef unsigned int natural_t;
+typedef natural_t mach_port_name_t;
+typedef mach_port_name_t *mach_port_name_array_t;
+typedef mach_port_name_t mach_port_t;
+
+typedef mach_port_t task_t;
+typedef mach_port_t task_name_t;
+typedef mach_port_t thread_t;
+typedef mach_port_t thread_act_t;
+typedef mach_port_t ipc_space_t;
+typedef mach_port_t host_t;
+typedef mach_port_t host_priv_t;
+typedef mach_port_t host_security_t;
+typedef mach_port_t processor_t;
+typedef mach_port_t processor_set_t;
+typedef mach_port_t processor_set_control_t;
+typedef mach_port_t semaphore_t;
+typedef mach_port_t lock_set_t;
+typedef mach_port_t ledger_t;
+typedef mach_port_t alarm_t;
+typedef mach_port_t clock_serv_t;
+typedef mach_port_t clock_ctrl_t;
+
+typedef int alarm_type_t;
+typedef int sleep_type_t;
+typedef int clock_id_t;
+typedef int clock_flavor_t;
+typedef int *clock_attr_t;
+typedef int clock_res_t;
+
+/* osx has different clock functions so clockid undefined, but so POSIX headers work, define it
    similarly with timer_t */
-typedef uint32_t clockid_t;
+typedef int clockid_t;
 typedef int timer_t;
 
 /* actually not a struct at all in osx, just a uint32_t but for compatibility fudge it */
-/* TODO this should work, otherwise need to move all sigset_t handling out of common types */
+/* TODO this should work, but really need to move all sigset_t handling out of common types */
 typedef struct {
   uint32_t      sig[1];
 } sigset_t;
@@ -127,7 +159,7 @@ struct stat {
   dev_t           st_dev;
   mode_t          st_mode;
   nlink_t         st_nlink;
-  ino_t           st_ino;
+  ino64_t         st_ino;
   uid_t           st_uid;
   gid_t           st_gid;
   dev_t           st_rdev;
@@ -135,6 +167,25 @@ struct stat {
   struct timespec st_mtimespec;
   struct timespec st_ctimespec;
   struct timespec st_birthtimespec;
+  off_t           st_size;
+  blkcnt_t        st_blocks;
+  blksize_t       st_blksize;
+  uint32_t        st_flags;
+  uint32_t        st_gen;
+  int32_t         st_lspare;
+  int64_t         st_qspare[2];
+};
+struct stat32 {
+  dev_t           st_dev;
+  ino_t           st_ino;
+  mode_t          st_mode;
+  nlink_t         st_nlink;
+  uid_t           st_uid;
+  gid_t           st_gid;
+  dev_t           st_rdev;
+  struct  timespec st_atimespec;
+  struct  timespec st_mtimespec;
+  struct  timespec st_ctimespec;
   off_t           st_size;
   blkcnt_t        st_blocks;
   blksize_t       st_blksize;
@@ -169,8 +220,8 @@ struct sigaction {
   int sa_flags;
 };
 struct sigevent {
-  int             sigev_notify;
-  int             sigev_signo;
+  int sigev_notify;
+  int sigev_signo;
   union sigval    sigev_value;
   void            (*sigev_notify_function)(union sigval);
   void            *sigev_notify_attributes; /* pthread_attr_t */
@@ -233,14 +284,25 @@ struct kevent {
   void            *udata;
 };
 struct aiocb {
-  int             aio_fildes;
+  int aio_fildes;
   off_t           aio_offset;
   volatile void   *aio_buf;
   size_t          aio_nbytes;
-  int             aio_reqprio;
+  int aio_reqprio;
   struct sigevent aio_sigevent;
-  int             aio_lio_opcode;
+  int aio_lio_opcode;
 };
+struct mach_timebase_info {
+  uint32_t	numer;
+  uint32_t	denom;
+};
+typedef struct mach_timebase_info	*mach_timebase_info_t;
+typedef struct mach_timebase_info	mach_timebase_info_data_t;
+struct mach_timespec {
+  unsigned int tv_sec;
+  clock_res_t  tv_nsec;
+};
+typedef struct mach_timespec mach_timespec_t;
 ]]
 
 append [[
@@ -250,14 +312,26 @@ int mount(const char *type, const char *dir, int flags, void *data);
 int stat64(const char *path, struct stat *sb);
 int lstat64(const char *path, struct stat *sb);
 int fstat64(int fd, struct stat *sb);
+int fstatat(int dirfd, const char *pathname, struct stat32 *buf, int flags);
 
 int _getdirentries(int fd, char *buf, int nbytes, long *basep);
 int _sigaction(int signum, const struct sigaction *act, struct sigaction *oldact);
+
+/* mach_absolute_time uses rtdsc, so careful if move CPU */
+uint64_t mach_absolute_time(void);
+kern_return_t mach_timebase_info(mach_timebase_info_t info);
+kern_return_t mach_wait_until(uint64_t deadline);
+
+extern mach_port_t mach_task_self_;
+mach_port_t mach_host_self(void);
+kern_return_t mach_port_deallocate(ipc_space_t task, mach_port_name_t name);
+
+kern_return_t host_get_clock_service(host_t host, clock_id_t clock_id, clock_serv_t *clock_serv);
+kern_return_t clock_get_time(clock_serv_t clock_serv, mach_timespec_t *cur_time);
 ]]
 
 ffi.cdef(table.concat(defs, ""))
 
-require "syscall.ffifunctions"
 require "syscall.bsd.ffi"
 
 

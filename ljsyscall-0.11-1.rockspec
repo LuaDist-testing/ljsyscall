@@ -1,17 +1,17 @@
 -- This file was automatically generated for the LuaDist project.
 
 package = "ljsyscall"
-version = "0.10-2"
+version = "0.11-1"
 -- LuaDist source
 source = {
-  tag = "0.10-2",
+  tag = "0.11-1",
   url = "git://github.com/LuaDist-testing/ljsyscall.git"
 }
 -- Original source
 -- source =
 -- {
---   url = "https://github.com/justincormack/ljsyscall/archive/v0.10.tar.gz";
---   dir = "ljsyscall-0.10";
+--   url = "https://github.com/justincormack/ljsyscall/archive/v0.11.tar.gz";
+--   dir = "ljsyscall-0.11";
 -- }
 
 description =
@@ -33,7 +33,6 @@ build =
     ["syscall.abi"] = "syscall/abi.lua";
     ["syscall.helpers"] = "syscall/helpers.lua";
     ["syscall.syscalls"] = "syscall/syscalls.lua";
-    ["syscall.ffifunctions"] = "syscall/ffifunctions.lua";
     ["syscall.libc"] = "syscall/libc.lua";
     ["syscall.methods"] = "syscall/methods.lua";
     ["syscall.ffitypes"] = "syscall/ffitypes.lua";
@@ -70,6 +69,10 @@ build =
         ["syscall.linux.arm.ffi"] = "syscall/linux/arm/ffi.lua";
         ["syscall.linux.arm.ioctl"] = "syscall/linux/arm/ioctl.lua";
         ["syscall.linux.arm.nr"] = "syscall/linux/arm/nr.lua";
+        ["syscall.linux.arm64.constants"] = "syscall/linux/arm64/constants.lua";
+        ["syscall.linux.arm64.ffi"] = "syscall/linux/arm64/ffi.lua";
+        ["syscall.linux.arm64.ioctl"] = "syscall/linux/arm64/ioctl.lua";
+        ["syscall.linux.arm64.nr"] = "syscall/linux/arm64/nr.lua";
         ["syscall.linux.mips.constants"] = "syscall/linux/mips/constants.lua";
         ["syscall.linux.mips.ffi"] = "syscall/linux/mips/ffi.lua";
         ["syscall.linux.mips.ioctl"] = "syscall/linux/mips/ioctl.lua";
@@ -78,6 +81,10 @@ build =
         ["syscall.linux.ppc.ffi"] = "syscall/linux/ppc/ffi.lua";
         ["syscall.linux.ppc.ioctl"] = "syscall/linux/ppc/ioctl.lua";
         ["syscall.linux.ppc.nr"] = "syscall/linux/ppc/nr.lua";
+        ["syscall.linux.ppc64le.constants"] = "syscall/linux/ppc64le/constants.lua";
+        ["syscall.linux.ppc64le.ffi"] = "syscall/linux/ppc64le/ffi.lua";
+        ["syscall.linux.ppc64le.ioctl"] = "syscall/linux/ppc64le/ioctl.lua";
+        ["syscall.linux.ppc64le.nr"] = "syscall/linux/ppc64le/nr.lua";
         ["syscall.linux.x64.constants"] = "syscall/linux/x64/constants.lua";
         ["syscall.linux.x64.ffi"] = "syscall/linux/x64/ffi.lua";
         ["syscall.linux.x64.ioctl"] = "syscall/linux/x64/ioctl.lua";

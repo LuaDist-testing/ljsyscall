@@ -154,6 +154,11 @@ local function fixup_constants(abi, c)
   c.NTF.MASTER = nil
   c.SECCOMP_MODE = nil
   c.SECCOMP_RET = nil
+  c.MFD = nil
+  c.RTA.NEWDST = nil
+  c.RTA.PREF = nil
+  c.RTA.VIA = nil
+  c.RTA.MFC_STATS = nil
 
   -- these are not even in linux git head headers or names wrong
   c.O.ASYNC = nil
@@ -175,6 +180,7 @@ local function fixup_constants(abi, c)
   c.SI.ASYNCNL = nil
   c.RLIMIT.OFILE = nil
   c.TFD_TIMER.ABSTIME = nil
+  c.TFD_TIMER.CANCEL_ON_SET = nil
   c.AT.EMPTY_PATH = nil
 
   -- renamed it seems, TODO sort out
@@ -189,6 +195,20 @@ local function fixup_constants(abi, c)
   if abi.arch == "mips" then
      c.SYS._newselect, c.SYS.select = c.SYS.select, nil -- now called _newselect
   end
+
+  -- new syscalls not in headers yet
+  c.SYS.kcmp = nil
+  c.SYS.finit_module = nil
+  c.SYS.sched_setattr = nil
+  c.SYS.sched_getattr = nil
+  c.SYS.renameat2 = nil
+  c.SYS.seccomp = nil
+  c.SYS.getrandom = nil
+  c.SYS.memfd_create = nil
+  c.SYS.kexec_file_load = nil
+
+  -- new constants
+  c.GRND = nil
 
   return c
 end

@@ -44,7 +44,7 @@ typedef	unsigned int  nfds_t;
 typedef int64_t       daddr_t;
 typedef int32_t       timer_t;
 ]]
-if version == 201311 then append [[
+if version <= 201311 then append [[
 typedef uint32_t      ino_t;
 typedef int32_t       time_t;
 typedef int32_t       clock_t;
@@ -136,7 +136,7 @@ struct pollfd {
   short revents;
 };
 ]]
-if version == 201311 then append [[
+if version <= 201311 then append [[
 struct stat {
   dev_t     st_dev;
   ino_t     st_ino;
@@ -213,7 +213,7 @@ struct termios {
   speed_t         c_ospeed;
 };
 ]]
-if version == 201311 then append [[
+if version <= 201311 then append [[
 struct dirent {
   uint32_t d_fileno;
   uint16_t d_reclen;
@@ -295,6 +295,7 @@ struct  sigaction {
 append [[
 int reboot(int howto);
 int ioctl(int d, unsigned long request, void *arg);
+int fstatat(int dirfd, const char *pathname, struct stat *buf, int flags);
 
 /* not syscalls, but using for now */
 int grantpt(int fildes);
@@ -312,6 +313,5 @@ local s = table.concat(defs, "")
 
 ffi.cdef(s)
 
-require "syscall.ffifunctions"
 require "syscall.bsd.ffi"
 
